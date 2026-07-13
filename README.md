@@ -4,6 +4,10 @@ A Duolingo-style Khmer practice app for two learners, running entirely on your o
 
 ## Run it
 
+**Easiest:** double-click **Khmer Practice.app** on the Desktop. It starts the app and opens your browser automatically. To stop it, close the Terminal window it opens. (The app just runs `scripts/start.sh` — if you move the project, re-create it or run that script directly.)
+
+**Or from the terminal:**
+
 ```bash
 npm install   # first time only
 npm start
