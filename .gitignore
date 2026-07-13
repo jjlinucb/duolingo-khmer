@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Local database (contains both learners' personal progress — never commit)
+khmer.db
+khmer.db-wal
+khmer.db-shm
+
+# Machine-local Claude Code settings
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# Note: tts-cache/ IS committed on purpose so the app has audio offline out of the box.

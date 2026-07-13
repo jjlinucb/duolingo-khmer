@@ -1,0 +1,13 @@
+{
+  "name": "duolingo-khmer",
+  "version": "1.0.0",
+  "description": "Duolingo-style Khmer practice app for two learners on a home network",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.19.2"
+  }
+}
