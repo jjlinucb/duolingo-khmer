@@ -1,9 +1,10 @@
+require('dotenv').config();
 const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const db = require('./db');
+const { query, migrate } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,12 +20,12 @@ function localDay(d) {
   return `${y}-${m}-${day}`;
 }
 
-function computeStreak(userId) {
-  const rows = db
-    .prepare('SELECT day FROM activity WHERE user_id = ? AND xp > 0 ORDER BY day DESC LIMIT 400')
-    .all(userId)
-    .map((r) => r.day);
-  const days = new Set(rows);
+async function computeStreak(userId) {
+  const { rows } = await query(
+    'SELECT day FROM activity WHERE user_id = $1 AND xp > 0 ORDER BY day DESC LIMIT 400',
+    [userId]
+  );
+  const days = new Set(rows.map((r) => r.day));
   let streak = 0;
   // Streak survives if today has no XP yet, as long as yesterday does.
   let cursor = new Date();
@@ -49,184 +50,250 @@ function weekDays() {
   return days;
 }
 
-function userSummary(u) {
+async function userSummary(u) {
   const week = weekDays();
-  const placeholders = week.map(() => '?').join(',');
-  const weekRows = db
-    .prepare(`SELECT day, xp FROM activity WHERE user_id = ? AND day IN (${placeholders})`)
-    .all(u.id, ...week);
+  const weekRows = (
+    await query('SELECT day, xp FROM activity WHERE user_id = $1 AND day = ANY($2::text[])', [
+      u.id,
+      week,
+    ])
+  ).rows;
   const byDay = Object.fromEntries(weekRows.map((r) => [r.day, r.xp]));
   const weekXp = week.map((day) => ({ day, xp: byDay[day] || 0 }));
-  const todayRow = db
-    .prepare('SELECT xp FROM activity WHERE user_id = ? AND day = ?')
-    .get(u.id, localDay(new Date()));
-  const totalXp = db.prepare('SELECT COALESCE(SUM(xp),0) AS t FROM activity WHERE user_id = ?').get(u.id).t;
-  const lessonsDone = db
-    .prepare(
-      "SELECT COUNT(*) AS c FROM lesson_progress WHERE user_id = ? AND completions > 0 AND lesson_id != 'review'"
+  const todayRow = (
+    await query('SELECT xp FROM activity WHERE user_id = $1 AND day = $2', [
+      u.id,
+      localDay(new Date()),
+    ])
+  ).rows[0];
+  const totalXp = (
+    await query('SELECT COALESCE(SUM(xp),0) AS t FROM activity WHERE user_id = $1', [u.id])
+  ).rows[0].t;
+  const lessonsDone = (
+    await query(
+      "SELECT COUNT(*) AS c FROM lesson_progress WHERE user_id = $1 AND completions > 0 AND lesson_id != 'review'",
+      [u.id]
     )
-    .get(u.id).c;
+  ).rows[0].c;
   return {
     id: u.id,
     name: u.name,
     avatar: u.avatar,
     weeklyGoal: u.weekly_goal,
-    streak: computeStreak(u.id),
-    todayXp: todayRow ? todayRow.xp : 0,
+    streak: await computeStreak(u.id),
+    todayXp: todayRow ? Number(todayRow.xp) : 0,
     weekXp,
     weekTotal: weekXp.reduce((s, d) => s + d.xp, 0),
-    totalXp,
-    lessonsDone,
+    totalXp: Number(totalXp),
+    lessonsDone: Number(lessonsDone),
   };
 }
 
+function asyncRoute(handler) {
+  return (req, res) => handler(req, res).catch((e) => {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  });
+}
+
 // ---------- Users ----------
-app.get('/api/users', (req, res) => {
-  const users = db.prepare('SELECT * FROM users ORDER BY id').all();
-  res.json(users.map(userSummary));
-});
+app.get(
+  '/api/users',
+  asyncRoute(async (req, res) => {
+    const users = (await query('SELECT * FROM users ORDER BY id')).rows;
+    res.json(await Promise.all(users.map(userSummary)));
+  })
+);
 
-app.post('/api/users', (req, res) => {
-  const { name, avatar } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
-  const info = db
-    .prepare('INSERT INTO users (name, avatar) VALUES (?, ?)')
-    .run(name.trim(), avatar || '🙂');
-  res.json(userSummary(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)));
-});
+app.post(
+  '/api/users',
+  asyncRoute(async (req, res) => {
+    const { name, avatar } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+    const { rows } = await query(
+      'INSERT INTO users (name, avatar) VALUES ($1, $2) RETURNING *',
+      [name.trim(), avatar || '🙂']
+    );
+    res.json(await userSummary(rows[0]));
+  })
+);
 
-app.put('/api/users/:id', (req, res) => {
-  const { name, avatar, weeklyGoal } = req.body;
-  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
-  if (!u) return res.status(404).json({ error: 'not found' });
-  db.prepare('UPDATE users SET name = ?, avatar = ?, weekly_goal = ? WHERE id = ?').run(
-    name !== undefined ? name : u.name,
-    avatar !== undefined ? avatar : u.avatar,
-    weeklyGoal !== undefined ? weeklyGoal : u.weekly_goal,
-    u.id
-  );
-  res.json(userSummary(db.prepare('SELECT * FROM users WHERE id = ?').get(u.id)));
-});
+app.put(
+  '/api/users/:id',
+  asyncRoute(async (req, res) => {
+    const { name, avatar, weeklyGoal } = req.body;
+    const u = (await query('SELECT * FROM users WHERE id = $1', [req.params.id])).rows[0];
+    if (!u) return res.status(404).json({ error: 'not found' });
+    await query('UPDATE users SET name = $1, avatar = $2, weekly_goal = $3 WHERE id = $4', [
+      name !== undefined ? name : u.name,
+      avatar !== undefined ? avatar : u.avatar,
+      weeklyGoal !== undefined ? weeklyGoal : u.weekly_goal,
+      u.id,
+    ]);
+    const updated = (await query('SELECT * FROM users WHERE id = $1', [u.id])).rows[0];
+    res.json(await userSummary(updated));
+  })
+);
 
 // ---------- Lesson progress ----------
-app.get('/api/progress/:userId', (req, res) => {
-  const rows = db
-    .prepare('SELECT lesson_id, completions, best_score FROM lesson_progress WHERE user_id = ?')
-    .all(req.params.userId);
-  const map = {};
-  for (const r of rows) map[r.lesson_id] = { completions: r.completions, bestScore: r.best_score };
-  res.json(map);
-});
+app.get(
+  '/api/progress/:userId',
+  asyncRoute(async (req, res) => {
+    const rows = (
+      await query('SELECT lesson_id, completions, best_score FROM lesson_progress WHERE user_id = $1', [
+        req.params.userId,
+      ])
+    ).rows;
+    const map = {};
+    for (const r of rows) map[r.lesson_id] = { completions: r.completions, bestScore: r.best_score };
+    res.json(map);
+  })
+);
 
-app.post('/api/progress', (req, res) => {
-  const { userId, lessonId, score, xp } = req.body;
-  if (!userId || !lessonId) return res.status(400).json({ error: 'userId and lessonId required' });
-  const gainedXp = Math.max(0, Math.min(100, Number(xp) || 0));
-  const now = new Date().toISOString();
-  db.prepare(
-    `INSERT INTO lesson_progress (user_id, lesson_id, completions, best_score, last_completed)
-     VALUES (?, ?, 1, ?, ?)
-     ON CONFLICT(user_id, lesson_id) DO UPDATE SET
-       completions = completions + 1,
-       best_score = MAX(best_score, excluded.best_score),
-       last_completed = excluded.last_completed`
-  ).run(userId, lessonId, Math.max(0, Math.min(100, Number(score) || 0)), now);
-  db.prepare(
-    `INSERT INTO activity (user_id, day, xp) VALUES (?, ?, ?)
-     ON CONFLICT(user_id, day) DO UPDATE SET xp = xp + excluded.xp`
-  ).run(userId, localDay(new Date()), gainedXp);
-  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  res.json({ ok: true, user: userSummary(u) });
-});
+app.post(
+  '/api/progress',
+  asyncRoute(async (req, res) => {
+    const { userId, lessonId, score, xp } = req.body;
+    if (!userId || !lessonId) return res.status(400).json({ error: 'userId and lessonId required' });
+    const gainedXp = Math.max(0, Math.min(100, Number(xp) || 0));
+    const now = new Date().toISOString();
+    await query(
+      `INSERT INTO lesson_progress (user_id, lesson_id, completions, best_score, last_completed)
+       VALUES ($1, $2, 1, $3, $4)
+       ON CONFLICT (user_id, lesson_id) DO UPDATE SET
+         completions = lesson_progress.completions + 1,
+         best_score = GREATEST(lesson_progress.best_score, excluded.best_score),
+         last_completed = excluded.last_completed`,
+      [userId, lessonId, Math.max(0, Math.min(100, Number(score) || 0)), now]
+    );
+    await query(
+      `INSERT INTO activity (user_id, day, xp) VALUES ($1, $2, $3)
+       ON CONFLICT (user_id, day) DO UPDATE SET xp = activity.xp + excluded.xp`,
+      [userId, localDay(new Date()), gainedXp]
+    );
+    const u = (await query('SELECT * FROM users WHERE id = $1', [userId])).rows[0];
+    res.json({ ok: true, user: await userSummary(u) });
+  })
+);
 
 // ---------- Shared cards ("Our Words") ----------
-app.get('/api/cards', (req, res) => {
-  const cards = db
-    .prepare(
-      `SELECT c.*, u.name AS created_by_name FROM cards c
-       LEFT JOIN users u ON u.id = c.created_by ORDER BY c.id DESC`
-    )
-    .all();
-  res.json(cards);
-});
+app.get(
+  '/api/cards',
+  asyncRoute(async (req, res) => {
+    const cards = (
+      await query(
+        `SELECT c.*, u.name AS created_by_name FROM cards c
+         LEFT JOIN users u ON u.id = c.created_by ORDER BY c.id DESC`
+      )
+    ).rows;
+    res.json(cards);
+  })
+);
 
-app.post('/api/cards', (req, res) => {
-  const { khmer, roman, english, notes, createdBy } = req.body;
-  if (!khmer || !english) return res.status(400).json({ error: 'khmer and english required' });
-  const info = db
-    .prepare('INSERT INTO cards (khmer, roman, english, notes, created_by) VALUES (?, ?, ?, ?, ?)')
-    .run(khmer.trim(), (roman || '').trim(), english.trim(), (notes || '').trim(), createdBy || null);
-  // New card becomes due immediately for every user.
-  const users = db.prepare('SELECT id FROM users').all();
-  const ins = db.prepare(
-    'INSERT OR IGNORE INTO card_reviews (user_id, card_id, box, due) VALUES (?, ?, 1, ?)'
-  );
-  for (const u of users) ins.run(u.id, info.lastInsertRowid, localDay(new Date()));
-  res.json(db.prepare('SELECT * FROM cards WHERE id = ?').get(info.lastInsertRowid));
-});
+app.post(
+  '/api/cards',
+  asyncRoute(async (req, res) => {
+    const { khmer, roman, english, notes, createdBy } = req.body;
+    if (!khmer || !english) return res.status(400).json({ error: 'khmer and english required' });
+    const { rows } = await query(
+      'INSERT INTO cards (khmer, roman, english, notes, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [khmer.trim(), (roman || '').trim(), english.trim(), (notes || '').trim(), createdBy || null]
+    );
+    const card = rows[0];
+    // New card becomes due immediately for every user.
+    const users = (await query('SELECT id FROM users')).rows;
+    for (const u of users) {
+      await query(
+        `INSERT INTO card_reviews (user_id, card_id, box, due) VALUES ($1, $2, 1, $3)
+         ON CONFLICT (user_id, card_id) DO NOTHING`,
+        [u.id, card.id, localDay(new Date())]
+      );
+    }
+    res.json(card);
+  })
+);
 
-app.put('/api/cards/:id', (req, res) => {
-  const c = db.prepare('SELECT * FROM cards WHERE id = ?').get(req.params.id);
-  if (!c) return res.status(404).json({ error: 'not found' });
-  const { khmer, roman, english, notes } = req.body;
-  db.prepare('UPDATE cards SET khmer = ?, roman = ?, english = ?, notes = ? WHERE id = ?').run(
-    khmer !== undefined ? khmer : c.khmer,
-    roman !== undefined ? roman : c.roman,
-    english !== undefined ? english : c.english,
-    notes !== undefined ? notes : c.notes,
-    c.id
-  );
-  res.json(db.prepare('SELECT * FROM cards WHERE id = ?').get(c.id));
-});
+app.put(
+  '/api/cards/:id',
+  asyncRoute(async (req, res) => {
+    const c = (await query('SELECT * FROM cards WHERE id = $1', [req.params.id])).rows[0];
+    if (!c) return res.status(404).json({ error: 'not found' });
+    const { khmer, roman, english, notes } = req.body;
+    await query('UPDATE cards SET khmer = $1, roman = $2, english = $3, notes = $4 WHERE id = $5', [
+      khmer !== undefined ? khmer : c.khmer,
+      roman !== undefined ? roman : c.roman,
+      english !== undefined ? english : c.english,
+      notes !== undefined ? notes : c.notes,
+      c.id,
+    ]);
+    const updated = (await query('SELECT * FROM cards WHERE id = $1', [c.id])).rows[0];
+    res.json(updated);
+  })
+);
 
-app.delete('/api/cards/:id', (req, res) => {
-  db.prepare('DELETE FROM card_reviews WHERE card_id = ?').run(req.params.id);
-  db.prepare('DELETE FROM cards WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
-});
+app.delete(
+  '/api/cards/:id',
+  asyncRoute(async (req, res) => {
+    await query('DELETE FROM card_reviews WHERE card_id = $1', [req.params.id]);
+    await query('DELETE FROM cards WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  })
+);
 
 // ---------- Spaced repetition ----------
 const BOX_INTERVALS = { 1: 0, 2: 1, 3: 3, 4: 7, 5: 21 }; // days until next review
 
-app.get('/api/reviews/:userId/due', (req, res) => {
-  const userId = req.params.userId;
-  // Ensure the user has a review row for every card (covers cards added before the user existed).
-  db.prepare(
-    `INSERT OR IGNORE INTO card_reviews (user_id, card_id, box, due)
-     SELECT ?, id, 1, ? FROM cards`
-  ).run(userId, localDay(new Date()));
-  const due = db
-    .prepare(
-      `SELECT c.*, r.box, r.due FROM card_reviews r
-       JOIN cards c ON c.id = r.card_id
-       WHERE r.user_id = ? AND r.due <= ?
-       ORDER BY r.due, c.id`
-    )
-    .all(userId, localDay(new Date()));
-  const total = db.prepare('SELECT COUNT(*) AS c FROM cards').get().c;
-  res.json({ due, totalCards: total });
-});
+app.get(
+  '/api/reviews/:userId/due',
+  asyncRoute(async (req, res) => {
+    const userId = req.params.userId;
+    // Ensure the user has a review row for every card (covers cards added before the user existed).
+    await query(
+      `INSERT INTO card_reviews (user_id, card_id, box, due)
+       SELECT $1, id, 1, $2 FROM cards
+       ON CONFLICT (user_id, card_id) DO NOTHING`,
+      [userId, localDay(new Date())]
+    );
+    const due = (
+      await query(
+        `SELECT c.*, r.box, r.due FROM card_reviews r
+         JOIN cards c ON c.id = r.card_id
+         WHERE r.user_id = $1 AND r.due <= $2
+         ORDER BY r.due, c.id`,
+        [userId, localDay(new Date())]
+      )
+    ).rows;
+    const total = Number((await query('SELECT COUNT(*) AS c FROM cards')).rows[0].c);
+    res.json({ due, totalCards: total });
+  })
+);
 
-app.post('/api/reviews', (req, res) => {
-  const { userId, cardId, grade } = req.body; // grade: 'again' | 'good' | 'easy'
-  const r = db
-    .prepare('SELECT * FROM card_reviews WHERE user_id = ? AND card_id = ?')
-    .get(userId, cardId);
-  if (!r) return res.status(404).json({ error: 'review row not found' });
-  let box = r.box;
-  if (grade === 'again') box = 1;
-  else if (grade === 'good') box = Math.min(5, box + 1);
-  else if (grade === 'easy') box = Math.min(5, box + 2);
-  const next = new Date();
-  next.setDate(next.getDate() + BOX_INTERVALS[box]);
-  db.prepare(
-    'UPDATE card_reviews SET box = ?, due = ?, last_reviewed = ? WHERE user_id = ? AND card_id = ?'
-  ).run(box, localDay(next), new Date().toISOString(), userId, cardId);
-  res.json({ ok: true, box });
-});
+app.post(
+  '/api/reviews',
+  asyncRoute(async (req, res) => {
+    const { userId, cardId, grade } = req.body; // grade: 'again' | 'good' | 'easy'
+    const r = (
+      await query('SELECT * FROM card_reviews WHERE user_id = $1 AND card_id = $2', [userId, cardId])
+    ).rows[0];
+    if (!r) return res.status(404).json({ error: 'review row not found' });
+    let box = r.box;
+    if (grade === 'again') box = 1;
+    else if (grade === 'good') box = Math.min(5, box + 1);
+    else if (grade === 'easy') box = Math.min(5, box + 2);
+    const next = new Date();
+    next.setDate(next.getDate() + BOX_INTERVALS[box]);
+    await query(
+      'UPDATE card_reviews SET box = $1, due = $2, last_reviewed = $3 WHERE user_id = $4 AND card_id = $5',
+      [box, localDay(next), new Date().toISOString(), userId, cardId]
+    );
+    res.json({ ok: true, box });
+  })
+);
 
 // ---------- Khmer audio (Google Translate TTS, cached locally) ----------
 // First request per word needs internet; after that it's served from tts-cache/ forever.
+// On Render's free tier this directory is ephemeral for NEW words (the 146 course
+// words ship pre-cached in the repo either way) — a cache miss just re-fetches.
 const TTS_DIR = path.join(__dirname, 'tts-cache');
 fs.mkdirSync(TTS_DIR, { recursive: true });
 
@@ -259,14 +326,25 @@ app.get('/api/tts', async (req, res) => {
   fs.createReadStream(file).pipe(res);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  const nets = os.networkInterfaces();
-  const lan = Object.values(nets)
-    .flat()
-    .filter((n) => n && n.family === 'IPv4' && !n.internal)
-    .map((n) => n.address);
-  console.log(`\n  ភាសាខ្មែរ — Khmer practice is running!\n`);
-  console.log(`  You:       http://localhost:${PORT}`);
-  for (const ip of lan) console.log(`  Your wife: http://${ip}:${PORT}  (same wifi)`);
-  console.log('');
-});
+migrate()
+  .then(() => {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`\n  ភាសាខ្មែរ — Khmer practice is running!\n`);
+      if (process.env.RENDER) {
+        console.log(`  Live at your Render URL — listening on port ${PORT}\n`);
+        return;
+      }
+      const nets = os.networkInterfaces();
+      const lan = Object.values(nets)
+        .flat()
+        .filter((n) => n && n.family === 'IPv4' && !n.internal)
+        .map((n) => n.address);
+      console.log(`  You:       http://localhost:${PORT}`);
+      for (const ip of lan) console.log(`  Your wife: http://${ip}:${PORT}  (same wifi)`);
+      console.log('');
+    });
+  })
+  .catch((e) => {
+    console.error('Failed to set up the database:', e.message);
+    process.exit(1);
+  });

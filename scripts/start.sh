@@ -17,6 +17,15 @@ if [ ! -d node_modules ]; then
   fi
 fi
 
+if [ ! -f .env ]; then
+  printf "  Missing .env — this app now needs a Postgres connection string.\n"
+  printf "  Copy .env.example to .env and paste in your Neon connection string.\n"
+  printf "  See README.md for the full one-time setup.\n\n"
+  printf "  Press any key to close.\n"
+  read -r -n 1 -s
+  exit 1
+fi
+
 # Open the browser once the server has had a moment to boot.
 ( sleep 2; open "http://localhost:${PORT:-3000}" >/dev/null 2>&1 ) &
 

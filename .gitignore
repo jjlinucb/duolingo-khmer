@@ -1,7 +1,10 @@
 # Dependencies
 node_modules/
 
-# Local database (contains both learners' personal progress — never commit)
+# Real database connection string — contains a password, never commit
+.env
+
+# Old local SQLite files, from before the Postgres migration
 khmer.db
 khmer.db-wal
 khmer.db-shm

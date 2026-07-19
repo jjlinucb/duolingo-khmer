@@ -1,23 +1,39 @@
 # 🇰🇭 Duolingo Khmer
 
-A Duolingo-style Khmer practice app for two learners, running entirely on your own machine — no cloud, no accounts, data stays in a local SQLite file.
+A Duolingo-style Khmer practice app for two learners. Runs as a real hosted web app (free) so it works from any device, anywhere — no home network required.
 
-## Run it
+## Deploy it (one-time setup)
 
-**Easiest:** double-click **Khmer Practice.app** on the Desktop. It starts the app and opens your browser automatically. To stop it, close the Terminal window it opens. (The app just runs `scripts/start.sh` — if you move the project, re-create it or run that script directly.)
+The app needs two free accounts — you have to create these yourself (that's a deliberate rule for whoever's setting this up, not a Render/Neon requirement); everything after that I can help drive.
 
-**Or from the terminal:**
+**1. Database — [Neon](https://neon.tech)** (free Postgres, no credit card, doesn't expire)
+   - Sign up, create a project (any name, e.g. `khmer`).
+   - On the project dashboard, copy the **connection string** (starts with `postgres://...`).
+
+**2. Hosting — [Render](https://render.com)** (free web service, no credit card)
+   - Sign up, then **New + → Blueprint**, connect your GitHub, pick the `duolingo-khmer` repo.
+   - Render reads [render.yaml](render.yaml) and asks for one thing: paste your Neon connection string into the `DATABASE_URL` field.
+   - Click deploy. First deploy takes a few minutes. Render gives you a URL like `https://duolingo-khmer.onrender.com` — that's the live app.
+
+Send that URL to your wife. That's it — same URL works for both of you, from any phone, laptop, anywhere with internet.
+
+**Heads up — there's no login.** Anyone who has the URL can open it, create a profile, and read/add to the shared word deck. Fine for sharing a link privately with your wife; don't post the URL somewhere public.
+
+**Also:** Render's free tier sleeps after 15 minutes of no traffic and takes ~30–60 seconds to wake back up on the next visit — normal, not broken. Neon's free database does the same (data itself never disappears, just the connection needs a moment to reconnect).
+
+## Local development
+
+Useful if you want to tinker with lesson content before it goes live.
 
 ```bash
-npm install   # first time only
+cp .env.example .env   # paste your Neon connection string in here
+npm install
 npm start
 ```
 
-Then open the URL it prints:
-- **You:** http://localhost:3000
-- **Your wife (same wifi):** the `http://<your-LAN-IP>:3000` line it prints — open that on her phone/laptop.
+Local runs point at the same Neon database as production — there's only one shared set of data, whether you reach it from `localhost` or the live Render URL.
 
-Keep the terminal running while you practice. Data lives in `khmer.db` next to `server.js` — back that one file up and you've backed up everything.
+There's also a double-click **Khmer Practice.app** on the Desktop that runs `scripts/start.sh` for you (installs deps on first run, opens your browser). It needs the same `.env` file to exist first.
 
 ## What's inside
 
@@ -42,5 +58,5 @@ Add a skill object to a section's `skills` array and it appears on the path (ski
 ## Notes
 
 - Khmer text renders with the system Khmer fonts that macOS, iOS, and Android all ship — no webfonts needed.
-- **Audio**: every word/letter has native-speaker-quality audio via Google's Khmer text-to-speech. Teach cards auto-play; 🔊 buttons appear on cards, word lists, and reviews. Audio MP3s are cached in `tts-cache/` — the whole course is pre-downloaded, so lessons work offline. New tutor words fetch their audio on first play (needs internet that one time). After adding course content to `data.js`, run `node scripts/prefetch-audio.js` to pre-download the new audio.
-- No auth — anyone on your wifi can reach it. Fine for a home network; don't port-forward it to the internet as-is.
+- **Audio**: every word/letter has native-speaker-quality audio via Google's Khmer text-to-speech. Teach cards auto-play; 🔊 buttons appear on cards, word lists, and reviews. The 146 course audio files are pre-downloaded and committed in `tts-cache/`, so the course itself has audio even if Google's endpoint is ever unreachable. New tutor words fetch their audio on first play (needs internet); on Render's free tier that cached file can be lost on redeploy/restart and re-fetches next time it's played — the word and your progress are unaffected either way. After adding course content to `data.js`, run `node scripts/prefetch-audio.js` to pre-download the new audio.
+- **Data**: lives in Postgres (Neon), not on any one device. Deleting the app or your Mac doesn't touch it; deleting the Neon project does.
