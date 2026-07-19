@@ -12,16 +12,15 @@ async function req(method, url, body) {
 }
 
 export const api = {
-  getUsers: () => req('GET', '/api/users'),
-  createUser: (name, avatar) => req('POST', '/api/users', { name, avatar }),
-  updateUser: (id, patch) => req('PUT', `/api/users/${id}`, patch),
-  getProgress: (userId) => req('GET', `/api/progress/${userId}`),
-  saveProgress: (userId, lessonId, score, xp) =>
-    req('POST', '/api/progress', { userId, lessonId, score, xp }),
+  getState: () => req('GET', '/api/state'),
+  updateSettings: (patch) => req('PUT', '/api/settings', patch),
+  resetAll: () => req('POST', '/api/reset'),
+  saveProgress: (lessonId, score, xp) => req('POST', '/api/progress', { lessonId, score, xp }),
+  placement: (passedLessonIds, xp) => req('POST', '/api/placement', { passedLessonIds, xp }),
   getCards: () => req('GET', '/api/cards'),
   createCard: (card) => req('POST', '/api/cards', card),
   updateCard: (id, patch) => req('PUT', `/api/cards/${id}`, patch),
   deleteCard: (id) => req('DELETE', `/api/cards/${id}`),
-  getDue: (userId) => req('GET', `/api/reviews/${userId}/due`),
-  gradeReview: (userId, cardId, grade) => req('POST', '/api/reviews', { userId, cardId, grade }),
+  getDue: () => req('GET', '/api/reviews/due'),
+  gradeReview: (cardId, grade) => req('POST', '/api/reviews', { cardId, grade }),
 };

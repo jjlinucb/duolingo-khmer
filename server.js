@@ -20,10 +20,9 @@ function localDay(d) {
   return `${y}-${m}-${day}`;
 }
 
-async function computeStreak(userId) {
+async function computeStreak() {
   const { rows } = await query(
-    'SELECT day FROM activity WHERE user_id = $1 AND xp > 0 ORDER BY day DESC LIMIT 400',
-    [userId]
+    'SELECT day FROM activity WHERE xp > 0 ORDER BY day DESC LIMIT 400'
   );
   const days = new Set(rows.map((r) => r.day));
   let streak = 0;
@@ -50,142 +49,156 @@ function weekDays() {
   return days;
 }
 
-async function userSummary(u) {
+function asyncRoute(handler) {
+  return (req, res) =>
+    handler(req, res).catch((e) => {
+      console.error(e);
+      res.status(500).json({ error: e.message });
+    });
+}
+
+async function fullState() {
+  const settings = (await query('SELECT * FROM settings WHERE id = 1')).rows[0];
   const week = weekDays();
   const weekRows = (
-    await query('SELECT day, xp FROM activity WHERE user_id = $1 AND day = ANY($2::text[])', [
-      u.id,
-      week,
-    ])
+    await query('SELECT day, xp FROM activity WHERE day = ANY($1::text[])', [week])
   ).rows;
   const byDay = Object.fromEntries(weekRows.map((r) => [r.day, r.xp]));
   const weekXp = week.map((day) => ({ day, xp: byDay[day] || 0 }));
   const todayRow = (
-    await query('SELECT xp FROM activity WHERE user_id = $1 AND day = $2', [
-      u.id,
-      localDay(new Date()),
-    ])
+    await query('SELECT xp FROM activity WHERE day = $1', [localDay(new Date())])
   ).rows[0];
-  const totalXp = (
-    await query('SELECT COALESCE(SUM(xp),0) AS t FROM activity WHERE user_id = $1', [u.id])
-  ).rows[0].t;
-  const lessonsDone = (
-    await query(
-      "SELECT COUNT(*) AS c FROM lesson_progress WHERE user_id = $1 AND completions > 0 AND lesson_id != 'review'",
-      [u.id]
-    )
-  ).rows[0].c;
+  const totalXp = (await query('SELECT COALESCE(SUM(xp),0) AS t FROM activity')).rows[0].t;
+  const progressRows = (
+    await query('SELECT lesson_id, completions, best_score FROM lesson_progress')
+  ).rows;
+  const progress = {};
+  for (const r of progressRows) {
+    progress[r.lesson_id] = { completions: r.completions, bestScore: r.best_score };
+  }
+  const lessonsDone = progressRows.filter(
+    (r) => r.completions > 0 && r.lesson_id !== 'review'
+  ).length;
   return {
-    id: u.id,
-    name: u.name,
-    avatar: u.avatar,
-    weeklyGoal: u.weekly_goal,
-    streak: await computeStreak(u.id),
+    settings: {
+      dailyGoal: settings.daily_goal,
+      romanizationMode: settings.romanization_mode,
+      soundEffects: settings.sound_effects,
+    },
+    streak: await computeStreak(),
     todayXp: todayRow ? Number(todayRow.xp) : 0,
     weekXp,
     weekTotal: weekXp.reduce((s, d) => s + d.xp, 0),
     totalXp: Number(totalXp),
-    lessonsDone: Number(lessonsDone),
+    lessonsDone,
+    progress,
   };
 }
 
-function asyncRoute(handler) {
-  return (req, res) => handler(req, res).catch((e) => {
-    console.error(e);
-    res.status(500).json({ error: e.message });
-  });
-}
-
-// ---------- Users ----------
+// ---------- App state ----------
 app.get(
-  '/api/users',
+  '/api/state',
   asyncRoute(async (req, res) => {
-    const users = (await query('SELECT * FROM users ORDER BY id')).rows;
-    res.json(await Promise.all(users.map(userSummary)));
-  })
-);
-
-app.post(
-  '/api/users',
-  asyncRoute(async (req, res) => {
-    const { name, avatar } = req.body;
-    if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
-    const { rows } = await query(
-      'INSERT INTO users (name, avatar) VALUES ($1, $2) RETURNING *',
-      [name.trim(), avatar || '🙂']
-    );
-    res.json(await userSummary(rows[0]));
+    res.json(await fullState());
   })
 );
 
 app.put(
-  '/api/users/:id',
+  '/api/settings',
   asyncRoute(async (req, res) => {
-    const { name, avatar, weeklyGoal } = req.body;
-    const u = (await query('SELECT * FROM users WHERE id = $1', [req.params.id])).rows[0];
-    if (!u) return res.status(404).json({ error: 'not found' });
-    await query('UPDATE users SET name = $1, avatar = $2, weekly_goal = $3 WHERE id = $4', [
-      name !== undefined ? name : u.name,
-      avatar !== undefined ? avatar : u.avatar,
-      weeklyGoal !== undefined ? weeklyGoal : u.weekly_goal,
-      u.id,
-    ]);
-    const updated = (await query('SELECT * FROM users WHERE id = $1', [u.id])).rows[0];
-    res.json(await userSummary(updated));
-  })
-);
-
-// ---------- Lesson progress ----------
-app.get(
-  '/api/progress/:userId',
-  asyncRoute(async (req, res) => {
-    const rows = (
-      await query('SELECT lesson_id, completions, best_score FROM lesson_progress WHERE user_id = $1', [
-        req.params.userId,
-      ])
-    ).rows;
-    const map = {};
-    for (const r of rows) map[r.lesson_id] = { completions: r.completions, bestScore: r.best_score };
-    res.json(map);
+    const s = (await query('SELECT * FROM settings WHERE id = 1')).rows[0];
+    const { dailyGoal, romanizationMode, soundEffects } = req.body;
+    await query(
+      'UPDATE settings SET daily_goal = $1, romanization_mode = $2, sound_effects = $3 WHERE id = 1',
+      [
+        dailyGoal !== undefined ? dailyGoal : s.daily_goal,
+        romanizationMode !== undefined ? romanizationMode : s.romanization_mode,
+        soundEffects !== undefined ? soundEffects : s.sound_effects,
+      ]
+    );
+    res.json(await fullState());
   })
 );
 
 app.post(
-  '/api/progress',
+  '/api/reset',
   asyncRoute(async (req, res) => {
-    const { userId, lessonId, score, xp } = req.body;
-    if (!userId || !lessonId) return res.status(400).json({ error: 'userId and lessonId required' });
-    const gainedXp = Math.max(0, Math.min(100, Number(xp) || 0));
-    const now = new Date().toISOString();
-    await query(
-      `INSERT INTO lesson_progress (user_id, lesson_id, completions, best_score, last_completed)
-       VALUES ($1, $2, 1, $3, $4)
-       ON CONFLICT (user_id, lesson_id) DO UPDATE SET
-         completions = lesson_progress.completions + 1,
-         best_score = GREATEST(lesson_progress.best_score, excluded.best_score),
-         last_completed = excluded.last_completed`,
-      [userId, lessonId, Math.max(0, Math.min(100, Number(score) || 0)), now]
-    );
-    await query(
-      `INSERT INTO activity (user_id, day, xp) VALUES ($1, $2, $3)
-       ON CONFLICT (user_id, day) DO UPDATE SET xp = activity.xp + excluded.xp`,
-      [userId, localDay(new Date()), gainedXp]
-    );
-    const u = (await query('SELECT * FROM users WHERE id = $1', [userId])).rows[0];
-    res.json({ ok: true, user: await userSummary(u) });
+    await query('DELETE FROM lesson_progress');
+    await query('DELETE FROM activity');
+    await query('DELETE FROM card_reviews');
+    await query('DELETE FROM cards');
+    await query('UPDATE settings SET daily_goal = 20, romanization_mode = $1, sound_effects = true WHERE id = 1', [
+      'peek',
+    ]);
+    res.json(await fullState());
   })
 );
 
-// ---------- Shared cards ("Our Words") ----------
+// ---------- Lesson progress ----------
+app.post(
+  '/api/progress',
+  asyncRoute(async (req, res) => {
+    const { lessonId, score, xp } = req.body;
+    if (!lessonId) return res.status(400).json({ error: 'lessonId required' });
+    const gainedXp = Math.max(0, Math.min(100, Number(xp) || 0));
+    const now = new Date().toISOString();
+    await query(
+      `INSERT INTO lesson_progress (lesson_id, completions, best_score, last_completed)
+       VALUES ($1, 1, $2, $3)
+       ON CONFLICT (lesson_id) DO UPDATE SET
+         completions = lesson_progress.completions + 1,
+         best_score = GREATEST(lesson_progress.best_score, excluded.best_score),
+         last_completed = excluded.last_completed`,
+      [lessonId, Math.max(0, Math.min(100, Number(score) || 0)), now]
+    );
+    await query(
+      `INSERT INTO activity (day, xp) VALUES ($1, $2)
+       ON CONFLICT (day) DO UPDATE SET xp = activity.xp + excluded.xp`,
+      [localDay(new Date()), gainedXp]
+    );
+    res.json({ ok: true, state: await fullState() });
+  })
+);
+
+// ---------- Placement test ----------
+// Marks a batch of lessons complete at once (the ones the test placed you past)
+// and logs one activity entry for the whole test, rather than per-lesson XP.
+app.post(
+  '/api/placement',
+  asyncRoute(async (req, res) => {
+    const { passedLessonIds, xp } = req.body;
+    if (!Array.isArray(passedLessonIds)) {
+      return res.status(400).json({ error: 'passedLessonIds must be an array' });
+    }
+    const now = new Date().toISOString();
+    for (const lessonId of passedLessonIds) {
+      await query(
+        `INSERT INTO lesson_progress (lesson_id, completions, best_score, last_completed)
+         VALUES ($1, 1, 85, $2)
+         ON CONFLICT (lesson_id) DO UPDATE SET
+           completions = GREATEST(lesson_progress.completions, 1),
+           best_score = GREATEST(lesson_progress.best_score, 85),
+           last_completed = excluded.last_completed`,
+        [lessonId, now]
+      );
+    }
+    const gainedXp = Math.max(0, Math.min(200, Number(xp) || 0));
+    if (gainedXp > 0) {
+      await query(
+        `INSERT INTO activity (day, xp) VALUES ($1, $2)
+         ON CONFLICT (day) DO UPDATE SET xp = activity.xp + excluded.xp`,
+        [localDay(new Date()), gainedXp]
+      );
+    }
+    res.json({ ok: true, state: await fullState() });
+  })
+);
+
+// ---------- My Words (personal tutor-vocab deck) ----------
 app.get(
   '/api/cards',
   asyncRoute(async (req, res) => {
-    const cards = (
-      await query(
-        `SELECT c.*, u.name AS created_by_name FROM cards c
-         LEFT JOIN users u ON u.id = c.created_by ORDER BY c.id DESC`
-      )
-    ).rows;
+    const cards = (await query('SELECT * FROM cards ORDER BY id DESC')).rows;
     res.json(cards);
   })
 );
@@ -193,22 +206,17 @@ app.get(
 app.post(
   '/api/cards',
   asyncRoute(async (req, res) => {
-    const { khmer, roman, english, notes, createdBy } = req.body;
+    const { khmer, roman, english, notes } = req.body;
     if (!khmer || !english) return res.status(400).json({ error: 'khmer and english required' });
     const { rows } = await query(
-      'INSERT INTO cards (khmer, roman, english, notes, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [khmer.trim(), (roman || '').trim(), english.trim(), (notes || '').trim(), createdBy || null]
+      'INSERT INTO cards (khmer, roman, english, notes) VALUES ($1, $2, $3, $4) RETURNING *',
+      [khmer.trim(), (roman || '').trim(), english.trim(), (notes || '').trim()]
     );
     const card = rows[0];
-    // New card becomes due immediately for every user.
-    const users = (await query('SELECT id FROM users')).rows;
-    for (const u of users) {
-      await query(
-        `INSERT INTO card_reviews (user_id, card_id, box, due) VALUES ($1, $2, 1, $3)
-         ON CONFLICT (user_id, card_id) DO NOTHING`,
-        [u.id, card.id, localDay(new Date())]
-      );
-    }
+    await query(
+      'INSERT INTO card_reviews (card_id, box, due) VALUES ($1, 1, $2) ON CONFLICT (card_id) DO NOTHING',
+      [card.id, localDay(new Date())]
+    );
     res.json(card);
   })
 );
@@ -244,23 +252,22 @@ app.delete(
 const BOX_INTERVALS = { 1: 0, 2: 1, 3: 3, 4: 7, 5: 21 }; // days until next review
 
 app.get(
-  '/api/reviews/:userId/due',
+  '/api/reviews/due',
   asyncRoute(async (req, res) => {
-    const userId = req.params.userId;
-    // Ensure the user has a review row for every card (covers cards added before the user existed).
+    // Ensure every card has a review row (covers cards added before card_reviews existed).
     await query(
-      `INSERT INTO card_reviews (user_id, card_id, box, due)
-       SELECT $1, id, 1, $2 FROM cards
-       ON CONFLICT (user_id, card_id) DO NOTHING`,
-      [userId, localDay(new Date())]
+      `INSERT INTO card_reviews (card_id, box, due)
+       SELECT id, 1, $1 FROM cards
+       ON CONFLICT (card_id) DO NOTHING`,
+      [localDay(new Date())]
     );
     const due = (
       await query(
         `SELECT c.*, r.box, r.due FROM card_reviews r
          JOIN cards c ON c.id = r.card_id
-         WHERE r.user_id = $1 AND r.due <= $2
+         WHERE r.due <= $1
          ORDER BY r.due, c.id`,
-        [userId, localDay(new Date())]
+        [localDay(new Date())]
       )
     ).rows;
     const total = Number((await query('SELECT COUNT(*) AS c FROM cards')).rows[0].c);
@@ -271,10 +278,8 @@ app.get(
 app.post(
   '/api/reviews',
   asyncRoute(async (req, res) => {
-    const { userId, cardId, grade } = req.body; // grade: 'again' | 'good' | 'easy'
-    const r = (
-      await query('SELECT * FROM card_reviews WHERE user_id = $1 AND card_id = $2', [userId, cardId])
-    ).rows[0];
+    const { cardId, grade } = req.body; // grade: 'again' | 'good' | 'easy'
+    const r = (await query('SELECT * FROM card_reviews WHERE card_id = $1', [cardId])).rows[0];
     if (!r) return res.status(404).json({ error: 'review row not found' });
     let box = r.box;
     if (grade === 'again') box = 1;
@@ -282,17 +287,19 @@ app.post(
     else if (grade === 'easy') box = Math.min(5, box + 2);
     const next = new Date();
     next.setDate(next.getDate() + BOX_INTERVALS[box]);
-    await query(
-      'UPDATE card_reviews SET box = $1, due = $2, last_reviewed = $3 WHERE user_id = $4 AND card_id = $5',
-      [box, localDay(next), new Date().toISOString(), userId, cardId]
-    );
+    await query('UPDATE card_reviews SET box = $1, due = $2, last_reviewed = $3 WHERE card_id = $4', [
+      box,
+      localDay(next),
+      new Date().toISOString(),
+      cardId,
+    ]);
     res.json({ ok: true, box });
   })
 );
 
 // ---------- Khmer audio (Google Translate TTS, cached locally) ----------
 // First request per word needs internet; after that it's served from tts-cache/ forever.
-// On Render's free tier this directory is ephemeral for NEW words (the 146 course
+// On Render's free tier this directory is ephemeral for NEW words (the course
 // words ship pre-cached in the repo either way) — a cache miss just re-fetches.
 const TTS_DIR = path.join(__dirname, 'tts-cache');
 fs.mkdirSync(TTS_DIR, { recursive: true });
@@ -339,8 +346,8 @@ migrate()
         .flat()
         .filter((n) => n && n.family === 'IPv4' && !n.internal)
         .map((n) => n.address);
-      console.log(`  You:       http://localhost:${PORT}`);
-      for (const ip of lan) console.log(`  Your wife: http://${ip}:${PORT}  (same wifi)`);
+      console.log(`  You:  http://localhost:${PORT}`);
+      for (const ip of lan) console.log(`  LAN:  http://${ip}:${PORT}`);
       console.log('');
     });
   })

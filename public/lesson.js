@@ -1,6 +1,4 @@
 // Lesson player: generates an exercise queue from a skill and runs it.
-import { api } from './api.js';
-
 const $app = () => document.getElementById('app');
 
 function shuffle(arr) {
@@ -20,7 +18,7 @@ function esc(s) {
 
 // --- Khmer audio: served by /api/tts (Google TTS, cached on the server) ---
 const audioCache = new Map();
-export function speakKhmer(text) {
+export function speakKhmer(text, rate = 1) {
   if (!text) return;
   let a = audioCache.get(text);
   if (!a) {
@@ -30,6 +28,7 @@ export function speakKhmer(text) {
   }
   try {
     a.currentTime = 0;
+    a.playbackRate = rate;
   } catch {}
   a.play().catch(() => {});
 }
@@ -46,21 +45,43 @@ function itemAnswer(skill, item) {
   return skill.kind === 'letters' ? item.r : item.e;
 }
 
-function buildQueue(skill) {
+function beep(ok) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.frequency.value = ok ? 880 : 220;
+    o.connect(g);
+    g.connect(ctx.destination);
+    g.gain.setValueAtTime(0.15, ctx.currentTime);
+    o.start();
+    o.stop(ctx.currentTime + 0.15);
+  } catch {}
+}
+
+function buildQueue(skill, skipTeach) {
   const items = skill.items;
   const queue = [];
-  for (const item of items) queue.push({ type: 'teach', item });
-  // One multiple-choice per item, alternating direction; both directions for small skills.
+  if (!skipTeach) for (const item of items) queue.push({ type: 'teach', item });
+
+  // Recognition exercises: rotate through the available types per item so
+  // lessons don't explode in length; small skills can afford every type.
+  const recognitionTypes =
+    skill.kind === 'vocab' ? ['mc-k2a', 'mc-a2k', 'listen-mc'] : ['mc-k2a', 'mc-a2k'];
   const mcs = [];
   items.forEach((item, i) => {
-    if (items.length <= 6) {
-      mcs.push({ type: 'mc-k2a', item });
-      mcs.push({ type: 'mc-a2k', item });
+    if (items.length <= 5) {
+      recognitionTypes.forEach((type) => mcs.push({ type, item }));
     } else {
-      mcs.push({ type: i % 2 === 0 ? 'mc-k2a' : 'mc-a2k', item });
+      mcs.push({ type: recognitionTypes[i % recognitionTypes.length], item });
     }
   });
   queue.push(...shuffle(mcs));
+
+  // Phrase translation drills, for the items that carry pre-split tokens.
+  const translates = items.filter((it) => it.tokens).map((item) => ({ type: 'translate', item }));
+  queue.push(...shuffle(translates));
+
   // Matching rounds covering all items, up to 5 pairs each.
   const shuffled = shuffle(items);
   for (let i = 0; i < shuffled.length; i += 5) {
@@ -75,8 +96,8 @@ function mcOptions(skill, item) {
   return shuffle([item, ...shuffle(pool).slice(0, 3)]);
 }
 
-export function startLesson(skill, { onExit, onFinish }) {
-  const queue = buildQueue(skill);
+export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundEffects = true }) {
+  const queue = buildQueue(skill, skipTeach);
   let idx = 0;
   let mistakes = 0;
   let totalAnswered = 0;
@@ -96,6 +117,8 @@ export function startLesson(skill, { onExit, onFinish }) {
     if (step.type === 'teach') body = renderTeach(step);
     else if (step.type === 'mc-k2a') body = renderMcK2A(step);
     else if (step.type === 'mc-a2k') body = renderMcA2K(step);
+    else if (step.type === 'listen-mc') body = renderListenMc(step);
+    else if (step.type === 'translate') body = renderTranslate(step);
     else if (step.type === 'match') body = renderMatch(step);
     $app().innerHTML = top + `<div class="exercise">${body}</div><div id="feedback-slot"></div>`;
     wire(step);
@@ -151,6 +174,41 @@ export function startLesson(skill, { onExit, onFinish }) {
       </div>`;
   }
 
+  function renderListenMc(step) {
+    const { item } = step;
+    const opts = mcOptions(skill, item);
+    return `
+      <h3>🎧 What do you hear?</h3>
+      <div class="listen-row">
+        <button class="audio-big" id="replay-audio" title="Play">🔊</button>
+        <button class="audio-slow" id="replay-slow" title="Play slowly">🐢</button>
+      </div>
+      <div class="choices">
+        ${opts
+          .map(
+            (o, i) =>
+              `<button class="choice" data-i="${i}" data-ok="${o === item}"><span class="kh khmer">${esc(o.k)}</span></button>`
+          )
+          .join('')}
+      </div>`;
+  }
+
+  function renderTranslate(step) {
+    const { item } = step;
+    const pool = skill.items.filter((x) => x !== item);
+    const distractors = shuffle(pool)
+      .slice(0, Math.min(3, pool.length))
+      .map((x) => x.k);
+    step._tiles = shuffle([...item.tokens, ...distractors]);
+    step._answer = [];
+    return `
+      <h3>Translate into Khmer:</h3>
+      <div class="prompt-word">“${esc(item.e)}”</div>
+      <div class="answer-row" id="answer-row"></div>
+      <div class="tile-bank" id="tile-bank"></div>
+      <div style="margin-top:20px"><button class="btn wide" id="check-btn" disabled>Check</button></div>`;
+  }
+
   function renderMatch(step) {
     const left = shuffle(step.items);
     const right = shuffle(step.items);
@@ -173,6 +231,7 @@ export function startLesson(skill, { onExit, onFinish }) {
   }
 
   function showFeedback(ok, correctText, onContinue) {
+    if (soundEffects) beep(ok);
     const slot = document.getElementById('feedback-slot');
     slot.innerHTML = `
       <div class="feedback ${ok ? 'good' : 'bad'}">
@@ -209,6 +268,50 @@ export function startLesson(skill, { onExit, onFinish }) {
     });
   }
 
+  function wireTranslate(step) {
+    const tiles = step._tiles;
+    function draw() {
+      const used = new Set(step._answer);
+      document.getElementById('answer-row').innerHTML = step._answer
+        .map((i) => `<button class="tile" data-i="${i}">${esc(tiles[i])}</button>`)
+        .join('');
+      document.getElementById('tile-bank').innerHTML = tiles
+        .map((t, i) => (used.has(i) ? '' : `<button class="tile" data-i="${i}">${esc(t)}</button>`))
+        .join('');
+      document.querySelectorAll('#answer-row .tile').forEach((b) => {
+        b.onclick = () => {
+          step._answer = step._answer.filter((i) => i !== Number(b.dataset.i));
+          draw();
+        };
+      });
+      document.querySelectorAll('#tile-bank .tile').forEach((b) => {
+        b.onclick = () => {
+          step._answer.push(Number(b.dataset.i));
+          draw();
+        };
+      });
+      document.getElementById('check-btn').disabled = step._answer.length === 0;
+    }
+    draw();
+    document.getElementById('check-btn').onclick = () => {
+      const built = step._answer.map((i) => tiles[i]).join('');
+      const ok = built === step.item.k;
+      totalAnswered++;
+      if (!ok) {
+        mistakes++;
+        const key = step.type + step.item.k;
+        if (!requeued.has(key)) {
+          requeued.add(key);
+          queue.push({ ...step });
+        }
+      }
+      showFeedback(ok, step.item.k, () => {
+        idx++;
+        render();
+      });
+    };
+  }
+
   function wire(step) {
     document.getElementById('quit').onclick = () => {
       if (confirm('Quit this lesson? Progress in it will be lost.')) onExit();
@@ -225,8 +328,15 @@ export function startLesson(skill, { onExit, onFinish }) {
         idx++;
         render();
       };
-    } else if (step.type === 'mc-k2a' || step.type === 'mc-a2k') {
+    } else if (step.type === 'mc-k2a' || step.type === 'mc-a2k' || step.type === 'listen-mc') {
+      if (step.type === 'listen-mc') {
+        speakKhmer(step.item.k);
+        document.getElementById('replay-audio').onclick = () => speakKhmer(step.item.k);
+        document.getElementById('replay-slow').onclick = () => speakKhmer(step.item.k, 0.6);
+      }
       document.querySelectorAll('.choice').forEach((c) => (c.onclick = () => answerMc(step, c)));
+    } else if (step.type === 'translate') {
+      wireTranslate(step);
     } else if (step.type === 'match') {
       let selLeft = null;
       let selRight = null;

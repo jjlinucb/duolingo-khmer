@@ -21,30 +21,28 @@ function query(text, params) {
   return pool.query(text, params);
 }
 
+// Single-user app: one implicit settings row (id = 1), no accounts.
 async function migrate() {
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      avatar TEXT NOT NULL DEFAULT '🙂',
-      weekly_goal INTEGER NOT NULL DEFAULT 100,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    CREATE TABLE IF NOT EXISTS settings (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      daily_goal INTEGER NOT NULL DEFAULT 20,
+      romanization_mode TEXT NOT NULL DEFAULT 'peek',
+      sound_effects BOOLEAN NOT NULL DEFAULT true,
+      CONSTRAINT single_row CHECK (id = 1)
     );
+    INSERT INTO settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
     CREATE TABLE IF NOT EXISTS lesson_progress (
-      user_id INTEGER NOT NULL REFERENCES users(id),
-      lesson_id TEXT NOT NULL,
+      lesson_id TEXT PRIMARY KEY,
       completions INTEGER NOT NULL DEFAULT 0,
       best_score INTEGER NOT NULL DEFAULT 0,
-      last_completed TEXT,
-      PRIMARY KEY (user_id, lesson_id)
+      last_completed TEXT
     );
 
     CREATE TABLE IF NOT EXISTS activity (
-      user_id INTEGER NOT NULL REFERENCES users(id),
-      day TEXT NOT NULL,
-      xp INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (user_id, day)
+      day TEXT PRIMARY KEY,
+      xp INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS cards (
@@ -53,17 +51,14 @@ async function migrate() {
       roman TEXT NOT NULL DEFAULT '',
       english TEXT NOT NULL,
       notes TEXT NOT NULL DEFAULT '',
-      created_by INTEGER REFERENCES users(id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
     CREATE TABLE IF NOT EXISTS card_reviews (
-      user_id INTEGER NOT NULL REFERENCES users(id),
-      card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+      card_id INTEGER PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
       box INTEGER NOT NULL DEFAULT 1,
       due TEXT NOT NULL,
-      last_reviewed TEXT,
-      PRIMARY KEY (user_id, card_id)
+      last_reviewed TEXT
     );
   `);
 }

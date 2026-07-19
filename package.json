@@ -1,7 +1,7 @@
 {
   "name": "duolingo-khmer",
   "version": "1.0.0",
-  "description": "Duolingo-style Khmer practice app for two learners on a home network",
+  "description": "Duolingo-style Khmer practice app",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

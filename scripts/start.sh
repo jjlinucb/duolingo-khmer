@@ -32,6 +32,5 @@ fi
 printf "  Starting… your browser will open automatically.\n"
 printf "  To STOP the app: close this window (or press Ctrl-C).\n\n"
 
-# Runs in the foreground so the LAN address for your wife stays on screen
-# and closing the window cleanly stops the server.
+# Runs in the foreground so closing the window cleanly stops the server.
 exec npm start
