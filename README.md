@@ -46,16 +46,15 @@ The unit/skill order follows the same shape as a friend's Thai course
   - Skills unlock strictly in order across the whole course (not just within a unit)
   - Exercise types: teach cards, multiple choice (both directions), audio-only "what do you hear?",
     tap-the-tiles phrase translation, and match-the-pairs. Wrong answers come back at the end of the lesson.
+  - **You need 80% accuracy to pass a lesson.** Below that, nothing is saved (no XP, no progress) and you
+    get a "Try Again" / "Exit to path" screen instead — no silent partial credit.
 - **Placement test** — offered on first run (and again anytime from Settings) if you already know some
   Khmer: one question per skill, in course order, stops at your first miss. Everything before that point
   gets marked complete so you don't redo material you already know.
 - **Sound Gym** — Series Trainer (hear a consonant, name its 1st/2nd series), Minimal Pairs (aspirated vs.
   unaspirated consonants — ក/ខ, ច/ឆ, etc.), and a Sound Guide explaining the romanization.
 - **Practice** — "Smart practice": a mixed quiz pulled from your weakest completed skills.
-- **My Words** — your personal deck for vocab from tutor sessions. Spaced repetition (Leitner boxes
-  1–5 → review after 0/1/3/7/21 days).
-- **Settings** (⚙️ in the top bar) — romanization visibility (hidden/peek, always, never — only new
-  words and revealed answers are exempt), sound effects, daily XP goal, your stats, and a full reset.
+- **Settings** (⚙️ in the top bar) — sound effects, daily XP goal, your stats, and a full reset.
 
 ## Adding/editing course content
 
@@ -76,8 +75,8 @@ course order). `kind: 'letters'` phrases prompts as "what sound", `kind: 'vocab'
 
 **A note on accuracy:** this vocabulary was hand-authored, not pulled from a vetted curriculum — the
 original 80-word course was spot-checked, but this expansion to ~270 words/phrases has not been reviewed
-by a native speaker or your tutor. Worth a pass with your tutor before trusting it fully, especially the
-less common words (feelings, faith vocabulary, relationships).
+by a native speaker. Worth a review pass before trusting it fully, especially the less common words
+(feelings, faith vocabulary, relationships).
 
 ## Notes
 
@@ -85,8 +84,6 @@ less common words (feelings, faith vocabulary, relationships).
 - **Audio**: every word/letter has native-speaker-quality audio via Google's Khmer text-to-speech. Teach
   cards auto-play; 🔊 buttons appear throughout. All ~270 course audio files are pre-downloaded and
   committed in `tts-cache/`, so the course itself has audio even if Google's endpoint is ever unreachable.
-  New My Words entries fetch their audio on first play (needs internet); on Render's free tier that cached
-  file can be lost on redeploy/restart and just re-fetches next time it's played. After adding course
-  content to `data.js`, run `node scripts/prefetch-audio.js` to pre-download the new audio.
+  After adding course content to `data.js`, run `node scripts/prefetch-audio.js` to pre-download the new audio.
 - **Data**: lives in Postgres (Neon), not on any one device. Deleting the app or your Mac doesn't touch
   it; deleting the Neon project does.

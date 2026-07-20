@@ -34,7 +34,7 @@ const MINIMAL_PAIRS = [
 ];
 
 const state = {
-  settings: { dailyGoal: 20, romanizationMode: 'peek', soundEffects: true },
+  settings: { dailyGoal: 20, soundEffects: true },
   streak: 0,
   todayXp: 0,
   weekXp: [],
@@ -42,8 +42,7 @@ const state = {
   totalXp: 0,
   lessonsDone: 0,
   progress: {}, // lessonId -> {completions, bestScore}
-  tab: 'learn', // 'learn' | 'soundgym' | 'practice' | 'words'
-  dueCount: 0,
+  tab: 'learn', // 'learn' | 'soundgym' | 'practice'
 };
 
 const flatSkills = allSkills(); // fixed course order: script, then unit1..unit10
@@ -83,7 +82,6 @@ function tabs() {
     ${t('learn', '🏠', 'Learn')}
     ${t('soundgym', '🎧', 'Sound Gym')}
     ${t('practice', '💪', 'Practice')}
-    ${t('words', '📒', 'My Words')}
   </nav>`;
 }
 
@@ -181,6 +179,8 @@ function startPlacementTest() {
   const questions = buildPlacementQuestions();
   let i = 0;
   const passed = [];
+  let ended = false; // guards against finishTest() running twice (quit + pending timer racing)
+  let pendingTimer = null;
 
   function render() {
     if (i >= questions.length) return finishTest();
@@ -204,7 +204,13 @@ function startPlacementTest() {
         </div>
       </div>`;
     document.getElementById('quit').onclick = () => {
-      if (confirm("Stop the test? Skills you've already passed will still be saved.")) finishTest();
+      if (confirm("Stop the test? Skills you've already passed will still be saved.")) {
+        if (pendingTimer) {
+          clearTimeout(pendingTimer);
+          pendingTimer = null;
+        }
+        finishTest();
+      }
     };
     document.querySelectorAll('.choice').forEach((c) => {
       c.onclick = () => {
@@ -214,8 +220,9 @@ function startPlacementTest() {
           if (x.dataset.ok === 'true') x.classList.add('correct');
         });
         if (!ok) c.classList.add('wrong');
-        setTimeout(
+        pendingTimer = setTimeout(
           () => {
+            pendingTimer = null;
             if (ok) {
               passed.push(q.skill.id);
               i++;
@@ -231,9 +238,17 @@ function startPlacementTest() {
   }
 
   async function finishTest() {
-    const xp = Math.min(200, passed.length * 5);
-    if (passed.length) await api.placement(passed, xp);
-    await refreshState();
+    if (ended) return;
+    ended = true;
+    try {
+      const xp = Math.min(200, passed.length * 5);
+      if (passed.length) await api.placement(passed, xp);
+      await refreshState();
+    } catch (e) {
+      // Don't leave the user stuck on a disabled exercise screen if the save failed —
+      // still show the result screen so they can get back to the path.
+      console.error(e);
+    }
     $app().innerHTML = `
       <div class="lesson-end">
         <div class="big-emoji">🎯</div>
@@ -477,217 +492,15 @@ function startSmartPractice() {
   });
 }
 
-// ---------------- My Words (personal tutor-vocab deck) ----------------
-
-let cardsCache = [];
-
-async function wordsView() {
-  cardsCache = await api.getCards();
-  const due = await api.getDue();
-  state.dueCount = due.due.length;
-  const mode = state.settings.romanizationMode;
-  const rows = cardsCache
-    .map((c) => {
-      const roman =
-        mode === 'never'
-          ? ''
-          : mode === 'always'
-          ? `<div class="wr">${esc(c.roman)}</div>`
-          : `<div class="wr peek-wrap"><span class="peek-hidden">${esc(c.roman)}</span><button class="peek-btn" data-peek>👁</button></div>`;
-      return `
-      <div class="word-item">
-        <div class="wkh khmer">${esc(c.khmer)}</div>
-        <div>
-          <div class="we">${esc(c.english)}</div>
-          ${roman}
-          ${c.notes ? `<div class="wnote">${esc(c.notes)}</div>` : ''}
-        </div>
-        <div class="wactions">
-          <button class="icon-btn" data-speak="${esc(c.khmer)}">🔊</button>
-          <button class="icon-btn" data-edit="${c.id}" title="Edit">✏️</button>
-          <button class="icon-btn" data-del="${c.id}" title="Delete">🗑️</button>
-        </div>
-      </div>`;
-    })
-    .join('');
-  return `
-    <div class="words-header">
-      <div>
-        <h2>My Words</h2>
-        <div class="muted">Words you've learned from your tutor, with spaced-repetition review</div>
-      </div>
-    </div>
-    ${
-      state.dueCount > 0
-        ? `<div class="review-banner">
-            <div class="cnt">${state.dueCount}</div>
-            <div><strong>due for review</strong></div>
-            <button class="btn blue" id="start-review" style="margin-left:auto">Review</button>
-          </div>`
-        : cardsCache.length
-        ? `<div class="review-banner"><div>✅ All caught up — nothing due right now.</div></div>`
-        : ''
-    }
-    <div class="duo-card">
-      <h3>Add a word from your tutor</h3>
-      <form class="word-form" id="add-word">
-        <input name="khmer" class="khmer" placeholder="Khmer — ខ្មែរ" required />
-        <input name="roman" placeholder="Pronunciation (e.g. suostei)" />
-        <input name="english" placeholder="English meaning" required />
-        <input name="notes" placeholder="Notes — e.g. 'tutor session Jul 12', usage tips" />
-        <button class="btn wide" type="submit">Add to My Words</button>
-      </form>
-    </div>
-    ${rows || '<div class="empty">No words yet. Add the first one from today\'s tutor session! ✍️</div>'}`;
-}
-
-function wireWords() {
-  document.getElementById('add-word').onsubmit = async (e) => {
-    e.preventDefault();
-    const f = e.target;
-    await api.createCard({
-      khmer: f.khmer.value,
-      roman: f.roman.value,
-      english: f.english.value,
-      notes: f.notes.value,
-    });
-    renderMain();
-  };
-  document.querySelectorAll('[data-speak]').forEach((b) => (b.onclick = () => speakKhmer(b.dataset.speak)));
-  document.querySelectorAll('[data-peek]').forEach((b) => {
-    b.onclick = () => b.closest('.peek-wrap').classList.add('revealed');
-  });
-  document.querySelectorAll('[data-del]').forEach((b) => {
-    b.onclick = async () => {
-      const card = cardsCache.find((c) => c.id == b.dataset.del);
-      if (confirm(`Delete "${card.khmer}" (${card.english})?`)) {
-        await api.deleteCard(card.id);
-        renderMain();
-      }
-    };
-  });
-  document.querySelectorAll('[data-edit]').forEach((b) => {
-    b.onclick = async () => {
-      const card = cardsCache.find((c) => c.id == b.dataset.edit);
-      const khmer = prompt('Khmer:', card.khmer);
-      if (khmer === null) return;
-      const roman = prompt('Pronunciation:', card.roman);
-      if (roman === null) return;
-      const english = prompt('English:', card.english);
-      if (english === null) return;
-      const notes = prompt('Notes:', card.notes);
-      if (notes === null) return;
-      await api.updateCard(card.id, { khmer, roman, english, notes });
-      renderMain();
-    };
-  });
-  const rev = document.getElementById('start-review');
-  if (rev) rev.onclick = startReviewSession;
-}
-
-function startReviewSession() {
-  api.getDue().then(({ due }) => {
-    if (!due.length) return;
-    let i = 0;
-    let reviewed = 0;
-
-    function render() {
-      if (i >= due.length) return finish();
-      const c = due[i];
-      const pct = Math.round((i / due.length) * 100);
-      const kmFirst = i % 2 === 0;
-      $app().innerHTML = `
-        <div class="lesson-top">
-          <button class="lesson-quit" id="quit">✕</button>
-          <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-        </div>
-        <div class="flashcard" id="card">
-          ${
-            kmFirst
-              ? `<div class="fkh khmer">${esc(c.khmer)} <button class="speak-btn" data-speak="${esc(c.khmer)}">🔊</button></div>`
-              : `<div class="fe" style="font-size:1.6rem">${esc(c.english)}</div>`
-          }
-          <div id="answer" style="display:none">
-            ${kmFirst ? `<div class="fe">${esc(c.english)}</div>` : `<div class="fkh khmer">${esc(c.khmer)}</div>`}
-            <div class="fr">${esc(c.roman)}</div>
-            ${c.notes ? `<div class="fnote">${esc(c.notes)}</div>` : ''}
-          </div>
-        </div>
-        <div id="controls" style="margin-top:16px">
-          <button class="btn wide blue" id="reveal">Show answer</button>
-        </div>`;
-      document.getElementById('quit').onclick = () => renderMain();
-      document.querySelectorAll('[data-speak]').forEach((b) => {
-        b.onclick = (e) => {
-          e.stopPropagation();
-          speakKhmer(b.dataset.speak);
-        };
-      });
-      if (kmFirst) speakKhmer(c.khmer);
-      document.getElementById('reveal').onclick = () => {
-        document.getElementById('answer').style.display = '';
-        if (!kmFirst) speakKhmer(c.khmer);
-        document.getElementById('controls').innerHTML = `
-          <div class="grade-row">
-            <button class="btn red" id="g-again">Again</button>
-            <button class="btn" id="g-good">Good</button>
-            <button class="btn blue" id="g-easy">Easy</button>
-          </div>
-          <p class="muted" style="text-align:center;margin-top:10px">
-            Again → repeats today · Good → next box · Easy → skips a box</p>`;
-        const grade = async (g) => {
-          await api.gradeReview(c.id, g);
-          reviewed++;
-          if (g === 'again') due.push(c);
-          i++;
-          render();
-        };
-        document.getElementById('g-again').onclick = () => grade('again');
-        document.getElementById('g-good').onclick = () => grade('good');
-        document.getElementById('g-easy').onclick = () => grade('easy');
-      };
-    }
-
-    async function finish() {
-      const xp = Math.min(20, reviewed * 2);
-      await api.saveProgress('review', 100, xp);
-      await refreshState();
-      $app().innerHTML = `
-        <div class="lesson-end">
-          <div class="big-emoji">🧠</div>
-          <h2>Review done!</h2>
-          <div class="end-stats">
-            <div class="end-stat xp"><div class="val">+${xp}</div><div class="lbl">XP</div></div>
-            <div class="end-stat acc"><div class="val">${reviewed}</div><div class="lbl">Cards</div></div>
-          </div>
-          <button class="btn wide" id="end-continue">Continue</button>
-        </div>`;
-      document.getElementById('end-continue').onclick = () => renderMain();
-    }
-
-    render();
-  });
-}
-
 // ---------------- Settings ----------------
 
 function renderSettings() {
-  const m = state.settings.romanizationMode;
   $app().innerHTML = `
     <div class="lesson-top">
       <button class="lesson-quit" id="quit">✕</button>
       <h3 style="margin-left:8px">⚙️ Settings</h3>
     </div>
     <div class="exercise">
-      <div class="duo-card">
-        <h3>Romanization (in My Words)</h3>
-        <p class="muted">New words and correct answers always show the sound — this only affects your saved word list.</p>
-        <div class="choices single-col" style="margin-top:12px">
-          <button class="choice ${m === 'peek' ? 'selected' : ''}" data-mode="peek">🙈 Hidden — tap 👁 to peek (recommended)</button>
-          <button class="choice ${m === 'always' ? 'selected' : ''}" data-mode="always">👁 Always show</button>
-          <button class="choice ${m === 'never' ? 'selected' : ''}" data-mode="never">🚫 Never show — script only</button>
-        </div>
-      </div>
       <div class="duo-card">
         <h3>Sound effects</h3>
         <div class="choices">
@@ -713,13 +526,6 @@ function renderSettings() {
     </div>`;
   document.getElementById('quit').onclick = () => renderMain();
   document.getElementById('open-guide').onclick = () => renderSoundGuide();
-  document.querySelectorAll('[data-mode]').forEach((b) => {
-    b.onclick = async () => {
-      await api.updateSettings({ romanizationMode: b.dataset.mode });
-      await refreshState();
-      renderSettings();
-    };
-  });
   document.querySelectorAll('[data-sfx]').forEach((b) => {
     b.onclick = async () => {
       await api.updateSettings({ soundEffects: b.dataset.sfx === 'true' });
@@ -735,7 +541,7 @@ function renderSettings() {
     renderSettings();
   };
   document.getElementById('reset-all').onclick = async () => {
-    if (!confirm('Reset ALL progress, streaks, and My Words? This cannot be undone.')) return;
+    if (!confirm('Reset ALL progress and streaks? This cannot be undone.')) return;
     await api.resetAll();
     await refreshState();
     renderWelcome();
@@ -761,18 +567,16 @@ function renderWelcome() {
 
 // ---------------- Main render ----------------
 
-async function renderMain() {
+function renderMain() {
   let body = '';
   if (state.tab === 'learn') body = learnView();
   else if (state.tab === 'soundgym') body = soundGymView();
   else if (state.tab === 'practice') body = practiceView();
-  else if (state.tab === 'words') body = await wordsView();
   $app().innerHTML = topbar() + body + tabs();
   wireChrome();
   if (state.tab === 'learn') wireLearn();
   else if (state.tab === 'soundgym') wireSoundGym();
   else if (state.tab === 'practice') wirePractice();
-  else if (state.tab === 'words') wireWords();
 }
 
 async function init() {

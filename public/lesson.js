@@ -96,13 +96,24 @@ function mcOptions(skill, item) {
   return shuffle([item, ...shuffle(pool).slice(0, 3)]);
 }
 
+const PASS_THRESHOLD = 80;
+
 export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundEffects = true }) {
-  const queue = buildQueue(skill, skipTeach);
+  let queue = buildQueue(skill, skipTeach);
   let idx = 0;
   let mistakes = 0;
   let totalAnswered = 0;
-  const requeued = new Set();
+  let requeued = new Set();
   const totalSteps = () => queue.length;
+
+  function resetLesson() {
+    queue = buildQueue(skill, skipTeach);
+    idx = 0;
+    mistakes = 0;
+    totalAnswered = 0;
+    requeued = new Set();
+    render();
+  }
 
   function render() {
     if (idx >= queue.length) return finish();
@@ -392,13 +403,14 @@ export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundE
     }
   }
 
-  async function finish() {
+  function finish() {
     const accuracy = totalAnswered === 0 ? 100 : Math.round(((totalAnswered - mistakes) / totalAnswered) * 100);
     const score = Math.max(0, accuracy);
+    if (score < PASS_THRESHOLD) return finishFailed(score);
     const xp = 10 + (score === 100 ? 5 : score >= 90 ? 3 : 0);
     $app().innerHTML = `
       <div class="lesson-end">
-        <div class="big-emoji">${score === 100 ? '🏆' : score >= 80 ? '🎉' : '💪'}</div>
+        <div class="big-emoji">${score === 100 ? '🏆' : '🎉'}</div>
         <h2>Lesson complete!</h2>
         <div class="end-stats">
           <div class="end-stat xp"><div class="val">+${xp}</div><div class="lbl">XP</div></div>
@@ -407,6 +419,20 @@ export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundE
         <button class="btn wide" id="end-continue">Continue</button>
       </div>`;
     document.getElementById('end-continue').onclick = () => onFinish({ score, xp });
+  }
+
+  function finishFailed(score) {
+    $app().innerHTML = `
+      <div class="lesson-end">
+        <div class="big-emoji">💪</div>
+        <h2>${score}% — so close!</h2>
+        <p class="muted" style="text-align:center;margin-bottom:24px">
+          You need ${PASS_THRESHOLD}% to pass this lesson. No progress or XP was saved — give it another go.</p>
+        <button class="btn wide" id="retry-lesson">Try Again</button>
+        <button class="btn ghost wide" id="exit-lesson" style="margin-top:12px">Exit to path</button>
+      </div>`;
+    document.getElementById('retry-lesson').onclick = resetLesson;
+    document.getElementById('exit-lesson').onclick = onExit;
   }
 
   render();

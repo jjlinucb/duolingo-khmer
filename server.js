@@ -82,7 +82,6 @@ async function fullState() {
   return {
     settings: {
       dailyGoal: settings.daily_goal,
-      romanizationMode: settings.romanization_mode,
       soundEffects: settings.sound_effects,
     },
     streak: await computeStreak(),
@@ -107,12 +106,11 @@ app.put(
   '/api/settings',
   asyncRoute(async (req, res) => {
     const s = (await query('SELECT * FROM settings WHERE id = 1')).rows[0];
-    const { dailyGoal, romanizationMode, soundEffects } = req.body;
+    const { dailyGoal, soundEffects } = req.body;
     await query(
-      'UPDATE settings SET daily_goal = $1, romanization_mode = $2, sound_effects = $3 WHERE id = 1',
+      'UPDATE settings SET daily_goal = $1, sound_effects = $2 WHERE id = 1',
       [
         dailyGoal !== undefined ? dailyGoal : s.daily_goal,
-        romanizationMode !== undefined ? romanizationMode : s.romanization_mode,
         soundEffects !== undefined ? soundEffects : s.sound_effects,
       ]
     );
@@ -125,11 +123,7 @@ app.post(
   asyncRoute(async (req, res) => {
     await query('DELETE FROM lesson_progress');
     await query('DELETE FROM activity');
-    await query('DELETE FROM card_reviews');
-    await query('DELETE FROM cards');
-    await query('UPDATE settings SET daily_goal = 20, romanization_mode = $1, sound_effects = true WHERE id = 1', [
-      'peek',
-    ]);
+    await query('UPDATE settings SET daily_goal = 20, sound_effects = true WHERE id = 1');
     res.json(await fullState());
   })
 );
@@ -191,109 +185,6 @@ app.post(
       );
     }
     res.json({ ok: true, state: await fullState() });
-  })
-);
-
-// ---------- My Words (personal tutor-vocab deck) ----------
-app.get(
-  '/api/cards',
-  asyncRoute(async (req, res) => {
-    const cards = (await query('SELECT * FROM cards ORDER BY id DESC')).rows;
-    res.json(cards);
-  })
-);
-
-app.post(
-  '/api/cards',
-  asyncRoute(async (req, res) => {
-    const { khmer, roman, english, notes } = req.body;
-    if (!khmer || !english) return res.status(400).json({ error: 'khmer and english required' });
-    const { rows } = await query(
-      'INSERT INTO cards (khmer, roman, english, notes) VALUES ($1, $2, $3, $4) RETURNING *',
-      [khmer.trim(), (roman || '').trim(), english.trim(), (notes || '').trim()]
-    );
-    const card = rows[0];
-    await query(
-      'INSERT INTO card_reviews (card_id, box, due) VALUES ($1, 1, $2) ON CONFLICT (card_id) DO NOTHING',
-      [card.id, localDay(new Date())]
-    );
-    res.json(card);
-  })
-);
-
-app.put(
-  '/api/cards/:id',
-  asyncRoute(async (req, res) => {
-    const c = (await query('SELECT * FROM cards WHERE id = $1', [req.params.id])).rows[0];
-    if (!c) return res.status(404).json({ error: 'not found' });
-    const { khmer, roman, english, notes } = req.body;
-    await query('UPDATE cards SET khmer = $1, roman = $2, english = $3, notes = $4 WHERE id = $5', [
-      khmer !== undefined ? khmer : c.khmer,
-      roman !== undefined ? roman : c.roman,
-      english !== undefined ? english : c.english,
-      notes !== undefined ? notes : c.notes,
-      c.id,
-    ]);
-    const updated = (await query('SELECT * FROM cards WHERE id = $1', [c.id])).rows[0];
-    res.json(updated);
-  })
-);
-
-app.delete(
-  '/api/cards/:id',
-  asyncRoute(async (req, res) => {
-    await query('DELETE FROM card_reviews WHERE card_id = $1', [req.params.id]);
-    await query('DELETE FROM cards WHERE id = $1', [req.params.id]);
-    res.json({ ok: true });
-  })
-);
-
-// ---------- Spaced repetition ----------
-const BOX_INTERVALS = { 1: 0, 2: 1, 3: 3, 4: 7, 5: 21 }; // days until next review
-
-app.get(
-  '/api/reviews/due',
-  asyncRoute(async (req, res) => {
-    // Ensure every card has a review row (covers cards added before card_reviews existed).
-    await query(
-      `INSERT INTO card_reviews (card_id, box, due)
-       SELECT id, 1, $1 FROM cards
-       ON CONFLICT (card_id) DO NOTHING`,
-      [localDay(new Date())]
-    );
-    const due = (
-      await query(
-        `SELECT c.*, r.box, r.due FROM card_reviews r
-         JOIN cards c ON c.id = r.card_id
-         WHERE r.due <= $1
-         ORDER BY r.due, c.id`,
-        [localDay(new Date())]
-      )
-    ).rows;
-    const total = Number((await query('SELECT COUNT(*) AS c FROM cards')).rows[0].c);
-    res.json({ due, totalCards: total });
-  })
-);
-
-app.post(
-  '/api/reviews',
-  asyncRoute(async (req, res) => {
-    const { cardId, grade } = req.body; // grade: 'again' | 'good' | 'easy'
-    const r = (await query('SELECT * FROM card_reviews WHERE card_id = $1', [cardId])).rows[0];
-    if (!r) return res.status(404).json({ error: 'review row not found' });
-    let box = r.box;
-    if (grade === 'again') box = 1;
-    else if (grade === 'good') box = Math.min(5, box + 1);
-    else if (grade === 'easy') box = Math.min(5, box + 2);
-    const next = new Date();
-    next.setDate(next.getDate() + BOX_INTERVALS[box]);
-    await query('UPDATE card_reviews SET box = $1, due = $2, last_reviewed = $3 WHERE card_id = $4', [
-      box,
-      localDay(next),
-      new Date().toISOString(),
-      cardId,
-    ]);
-    res.json({ ok: true, box });
   })
 );
 

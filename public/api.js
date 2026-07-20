@@ -17,10 +17,4 @@ export const api = {
   resetAll: () => req('POST', '/api/reset'),
   saveProgress: (lessonId, score, xp) => req('POST', '/api/progress', { lessonId, score, xp }),
   placement: (passedLessonIds, xp) => req('POST', '/api/placement', { passedLessonIds, xp }),
-  getCards: () => req('GET', '/api/cards'),
-  createCard: (card) => req('POST', '/api/cards', card),
-  updateCard: (id, patch) => req('PUT', `/api/cards/${id}`, patch),
-  deleteCard: (id) => req('DELETE', `/api/cards/${id}`),
-  getDue: () => req('GET', '/api/reviews/due'),
-  gradeReview: (cardId, grade) => req('POST', '/api/reviews', { cardId, grade }),
 };
