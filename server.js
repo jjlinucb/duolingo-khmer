@@ -77,7 +77,7 @@ async function fullState() {
     progress[r.lesson_id] = { completions: r.completions, bestScore: r.best_score };
   }
   const lessonsDone = progressRows.filter(
-    (r) => r.completions > 0 && r.lesson_id !== 'review'
+    (r) => r.completions > 0 && r.lesson_id !== 'review' && r.lesson_id !== 'practice'
   ).length;
   return {
     settings: {

@@ -482,10 +482,11 @@ function startSmartPractice() {
   const synthetic = { id: 'practice', title: 'Smart Practice', kind: 'vocab', items: pooled };
   startLesson(synthetic, {
     skipTeach: true,
+    maxXp: 10,
     soundEffects: state.settings.soundEffects,
     onExit: () => renderMain(),
     onFinish: async ({ score, xp }) => {
-      await api.saveProgress('practice', score, Math.min(10, xp));
+      await api.saveProgress('practice', score, xp);
       await refreshState();
       renderMain();
     },

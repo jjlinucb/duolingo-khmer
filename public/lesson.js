@@ -98,7 +98,7 @@ function mcOptions(skill, item) {
 
 const PASS_THRESHOLD = 80;
 
-export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundEffects = true }) {
+export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundEffects = true, maxXp = Infinity }) {
   let queue = buildQueue(skill, skipTeach);
   let idx = 0;
   let mistakes = 0;
@@ -407,7 +407,7 @@ export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundE
     const accuracy = totalAnswered === 0 ? 100 : Math.round(((totalAnswered - mistakes) / totalAnswered) * 100);
     const score = Math.max(0, accuracy);
     if (score < PASS_THRESHOLD) return finishFailed(score);
-    const xp = 10 + (score === 100 ? 5 : score >= 90 ? 3 : 0);
+    const xp = Math.min(maxXp, 10 + (score === 100 ? 5 : score >= 90 ? 3 : 0));
     $app().innerHTML = `
       <div class="lesson-end">
         <div class="big-emoji">${score === 100 ? '🏆' : '🎉'}</div>
