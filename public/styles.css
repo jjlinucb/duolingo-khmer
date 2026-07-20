@@ -238,52 +238,10 @@ button { font: inherit; cursor: pointer; border: none; background: none; }
 .legend { display: flex; gap: 16px; font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
 .legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
 
-/* ---------- My Words ---------- */
-.words-header { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 10px; }
-.word-form { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
-.word-form input, .word-form textarea {
-  font: inherit; padding: 12px 14px; border: 2px solid var(--line); border-radius: 12px; width: 100%;
-}
-.word-form input:focus, .word-form textarea:focus { outline: none; border-color: var(--blue); }
-.word-item { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
-.word-item .wkh { font-size: 1.6rem; min-width: 90px; }
-.word-item .wr { color: var(--blue-dark); font-weight: 700; font-size: 0.9rem; }
-.word-item .we { font-weight: 600; }
-.word-item .wnote { font-size: 0.8rem; color: var(--muted); font-style: italic; }
-.word-item .wby { font-size: 0.7rem; color: #aaa; }
-.word-item .wactions { margin-left: auto; display: flex; gap: 8px; }
-.icon-btn { font-size: 1.1rem; padding: 6px; border-radius: 8px; }
-.icon-btn:hover { background: #f2f2f2; }
-
-.peek-wrap { display: inline-flex; align-items: center; gap: 6px; }
-.peek-wrap .peek-hidden { filter: blur(5px); user-select: none; transition: filter 0.15s; }
-.peek-wrap.revealed .peek-hidden { filter: none; }
-.peek-btn { font-size: 0.85rem; padding: 2px 4px; opacity: 0.7; }
-.peek-wrap.revealed .peek-btn { display: none; }
-
-.review-banner {
-  display: flex; align-items: center; gap: 12px;
-  background: #e7f6fe; border: 2px solid #bde7fb; border-radius: 16px; padding: 14px 16px; margin: 14px 0;
-}
-.review-banner .cnt { font-size: 1.6rem; font-weight: 900; color: var(--blue-dark); }
-
-/* Flashcard review */
-.flashcard {
-  border: 2px solid var(--line); border-radius: 20px; padding: 40px 20px; text-align: center;
-  min-height: 260px; display: flex; flex-direction: column; justify-content: center; gap: 10px;
-}
-.flashcard .fkh { font-size: 3.2rem; }
-.flashcard .fr { font-size: 1.3rem; color: var(--blue-dark); font-weight: 700; }
-.flashcard .fe { font-size: 1.2rem; font-weight: 600; }
-.flashcard .fnote { color: var(--muted); font-style: italic; }
-.grade-row { display: flex; gap: 10px; margin-top: 16px; }
-.grade-row .btn { flex: 1; padding: 14px 8px; font-size: 0.85rem; }
-
 /* ---------- Profile setup ---------- */
 .setup { text-align: center; padding: 48px 0; }
 .setup h1 { color: var(--green); margin-bottom: 6px; }
 .setup p { color: var(--muted); margin-bottom: 24px; }
-.setup .word-form { text-align: left; max-width: 380px; margin: 0 auto 16px; }
 .user-pick { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin: 24px 0; }
 .user-pick .pick {
   display: flex; flex-direction: column; align-items: center; gap: 8px;

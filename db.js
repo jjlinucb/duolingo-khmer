@@ -27,7 +27,6 @@ async function migrate() {
     CREATE TABLE IF NOT EXISTS settings (
       id INTEGER PRIMARY KEY DEFAULT 1,
       daily_goal INTEGER NOT NULL DEFAULT 20,
-      romanization_mode TEXT NOT NULL DEFAULT 'peek',
       sound_effects BOOLEAN NOT NULL DEFAULT true,
       CONSTRAINT single_row CHECK (id = 1)
     );
@@ -45,21 +44,9 @@ async function migrate() {
       xp INTEGER NOT NULL DEFAULT 0
     );
 
-    CREATE TABLE IF NOT EXISTS cards (
-      id SERIAL PRIMARY KEY,
-      khmer TEXT NOT NULL,
-      roman TEXT NOT NULL DEFAULT '',
-      english TEXT NOT NULL,
-      notes TEXT NOT NULL DEFAULT '',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-
-    CREATE TABLE IF NOT EXISTS card_reviews (
-      card_id INTEGER PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
-      box INTEGER NOT NULL DEFAULT 1,
-      due TEXT NOT NULL,
-      last_reviewed TEXT
-    );
+    DROP TABLE IF EXISTS card_reviews;
+    DROP TABLE IF EXISTS cards;
+    ALTER TABLE settings DROP COLUMN IF EXISTS romanization_mode;
   `);
 }
 
