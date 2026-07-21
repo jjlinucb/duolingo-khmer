@@ -22,6 +22,10 @@ body {
   color: var(--ink);
   background: var(--bg);
   min-height: 100vh;
+  /* We scroll to the learner's course position ourselves on render; browser
+     scroll anchoring otherwise fights it as the Khmer webfont swaps in and
+     reflows dozens of rows above the viewport. */
+  overflow-anchor: none;
 }
 
 .khmer {

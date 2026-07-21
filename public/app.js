@@ -2,6 +2,10 @@ import { SECTIONS, allSkills, findSkill } from './data.js';
 import { api } from './api.js';
 import { startLesson, speakKhmer } from './lesson.js';
 
+// We scroll to the learner's current position ourselves on every render — the
+// browser's own scroll restoration would otherwise fight that with a stale position.
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+
 const $app = () => document.getElementById('app');
 
 function esc(s) {
@@ -105,6 +109,9 @@ function isUnlocked(globalIndex) {
 
 function learnView() {
   let gi = 0; // global index across the whole flattened course
+  // The "current" skill is the first one that's unlocked but not yet done —
+  // where the learner actually is in the course, so we can scroll there on render.
+  let currentMarked = false;
   const sections = SECTIONS.map((sec) => {
     const skills = sec.skills
       .map((sk) => {
@@ -113,8 +120,10 @@ function learnView() {
         const unlocked = isUnlocked(gi);
         gi++;
         const crowns = p?.completions ? '👑'.repeat(Math.min(5, p.completions)) : '';
+        const isCurrent = unlocked && !done && !currentMarked;
+        if (isCurrent) currentMarked = true;
         return `
-        <div class="skill-row">
+        <div class="skill-row" ${isCurrent ? 'id="current-skill"' : ''}>
           <div class="skill ${done ? 'done' : ''} ${unlocked ? '' : 'locked'} ${sec.color === 'blue' ? 'section-blue' : ''}">
             <button class="skill-bubble ${sk.kind === 'letters' ? 'khmer' : ''}" data-skill="${sk.id}" ${unlocked ? '' : 'disabled'}>
               ${unlocked ? esc(sk.icon) : '🔒'}
@@ -147,6 +156,11 @@ function wireLearn() {
   });
   const pt = document.getElementById('take-placement');
   if (pt) pt.onclick = () => startPlacementTest();
+  const scrollToCurrent = () => document.getElementById('current-skill')?.scrollIntoView({ block: 'center' });
+  scrollToCurrent();
+  // Re-run once layout settles — right at page load the Khmer webfont can still
+  // be swapping in and reflowing the page, which throws off the first scroll.
+  setTimeout(scrollToCurrent, 100);
 }
 
 function launchLesson(skillId) {
