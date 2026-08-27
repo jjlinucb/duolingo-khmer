@@ -26,6 +26,13 @@ export function speakKhmer(text, rate = 1) {
     a.onerror = () => audioCache.delete(text); // retry next tap (e.g. was offline)
     audioCache.set(text, a);
   }
+  // Any control that plays this same word (speak buttons, replay/slow-replay
+  // buttons) pulses for as long as playback lasts, so it's visually obvious
+  // audio is actually happening rather than a silent no-op tap.
+  const targets = document.querySelectorAll(`[data-speak="${CSS.escape(text)}"]`);
+  const setPlaying = (on) => targets.forEach((t) => t.classList.toggle('playing', on));
+  a.onplay = () => setPlaying(true);
+  a.onpause = a.onended = () => setPlaying(false);
   try {
     a.currentTime = 0;
     a.playbackRate = rate;
@@ -34,6 +41,25 @@ export function speakKhmer(text, rate = 1) {
 }
 function speakBtn(text) {
   return `<button class="speak-btn" data-speak="${esc(text)}" title="Listen">🔊</button>`;
+}
+
+// Small celebratory confetti burst, used on lesson/placement completion screens.
+const CONFETTI_COLORS = ['#ff4b4b', '#ffc800', '#58cc02', '#1cb0f6', '#ce82ff'];
+export function confettiBurst(count = 28) {
+  const layer = document.createElement('div');
+  layer.className = 'confetti-layer';
+  for (let i = 0; i < count; i++) {
+    const p = document.createElement('span');
+    p.className = 'confetti-piece';
+    p.style.left = Math.random() * 100 + 'vw';
+    p.style.background = CONFETTI_COLORS[i % CONFETTI_COLORS.length];
+    p.style.animationDelay = Math.random() * 0.3 + 's';
+    p.style.setProperty('--rot', Math.random() * 360 + 'deg');
+    p.style.setProperty('--drift', Math.random() * 80 - 40 + 'px');
+    layer.appendChild(p);
+  }
+  document.body.appendChild(layer);
+  setTimeout(() => layer.remove(), 1800);
 }
 
 // The prompt label depends on whether we're learning letters or vocab.
@@ -191,8 +217,8 @@ export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundE
     return `
       <h3>🎧 What do you hear?</h3>
       <div class="listen-row">
-        <button class="audio-big" id="replay-audio" title="Play">🔊</button>
-        <button class="audio-slow" id="replay-slow" title="Play slowly">🐢</button>
+        <button class="audio-big" id="replay-audio" data-speak="${esc(item.k)}" title="Play">🔊</button>
+        <button class="audio-slow" id="replay-slow" data-speak="${esc(item.k)}" title="Play slowly">🐢</button>
       </div>
       <div class="choices">
         ${opts
@@ -272,6 +298,9 @@ export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundE
         requeued.add(key);
         queue.push({ ...step });
       }
+      // For "what do you hear?" a wrong guess means they misheard it — play the
+      // correct word again, slowly, while the answer is still on screen.
+      if (step.type === 'listen-mc') setTimeout(() => speakKhmer(step.item.k, 0.7), 350);
     }
     showFeedback(ok, itemAnswer(skill, step.item), () => {
       idx++;
@@ -408,6 +437,7 @@ export function startLesson(skill, { onExit, onFinish, skipTeach = false, soundE
     const score = Math.max(0, accuracy);
     if (score < PASS_THRESHOLD) return finishFailed(score);
     const xp = Math.min(maxXp, 10 + (score === 100 ? 5 : score >= 90 ? 3 : 0));
+    if (score === 100) confettiBurst();
     $app().innerHTML = `
       <div class="lesson-end">
         <div class="big-emoji">${score === 100 ? '🏆' : '🎉'}</div>

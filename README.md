@@ -48,13 +48,17 @@ The unit/skill order follows the same shape as a friend's Thai course
     tap-the-tiles phrase translation, and match-the-pairs. Wrong answers come back at the end of the lesson.
   - **You need 80% accuracy to pass a lesson.** Below that, nothing is saved (no XP, no progress) and you
     get a "Try Again" / "Exit to path" screen instead — no silent partial credit.
-- **Placement test** — offered on first run (and again anytime from Settings) if you already know some
-  Khmer: one question per skill, in course order, stops at your first miss. Everything before that point
-  gets marked complete so you don't redo material you already know.
+- **Placement test** — offered on first run, and re-takable anytime from Settings, if you already know
+  some Khmer: up to two questions per skill (in course order), starting from wherever you currently are
+  in the path. A skill only fails the test (ending it) if you miss both questions on it, so one unlucky
+  guess doesn't wrongly stop you early. Everything up to that point gets marked complete so you don't
+  redo material you already know.
 - **Sound Gym** — Series Trainer (hear a consonant, name its 1st/2nd series), Minimal Pairs (aspirated vs.
-  unaspirated consonants — ក/ខ, ច/ឆ, etc.), and a Sound Guide explaining the romanization.
+  unaspirated consonants — ក/ខ, ច/ឆ, etc.), and a Sound Guide explaining the romanization. A wrong guess
+  replays the correct sound slowly so you hear what you missed.
 - **Practice** — "Smart practice": a mixed quiz pulled from your weakest completed skills.
-- **Settings** (⚙️ in the top bar) — sound effects, daily XP goal, your stats, and a full reset.
+- **Settings** (⚙️ in the top bar) — sound effects, daily XP goal, your stats, retaking the placement
+  test, and a full reset.
 
 ## Adding/editing course content
 
@@ -80,6 +84,11 @@ by a native speaker. Worth a review pass before trusting it fully, especially th
 
 ## Notes
 
+- **Install it as an app**: this is a PWA — open the live URL on a phone and use "Add to Home Screen"
+  (iOS Safari) or the install prompt (Android Chrome) to get a real home-screen icon that opens
+  full-screen, no browser bar. The app shell and any word you've already heard are cached by
+  [public/service-worker.js](public/service-worker.js), so re-opening it is instant and previously-heard
+  audio still plays offline. Progress/XP/settings always require a live connection to the database, though.
 - Khmer text renders with the system Khmer fonts that macOS, iOS, and Android all ship — no webfonts needed.
 - **Audio**: every word/letter has native-speaker-quality audio via Google's Khmer text-to-speech. Teach
   cards auto-play; 🔊 buttons appear throughout. All ~270 course audio files are pre-downloaded and

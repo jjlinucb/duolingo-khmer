@@ -1,10 +1,16 @@
 import { SECTIONS, allSkills, findSkill } from './data.js';
 import { api } from './api.js';
-import { startLesson, speakKhmer } from './lesson.js';
+import { startLesson, speakKhmer, confettiBurst } from './lesson.js';
 
 // We scroll to the learner's current position ourselves on every render — the
 // browser's own scroll restoration would otherwise fight that with a stale position.
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+
+// Installable PWA: app shell + heard audio get cached so the installed app
+// opens instantly and replays already-heard words offline.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/service-worker.js'));
+}
 
 const $app = () => document.getElementById('app');
 
@@ -72,7 +78,7 @@ function topbar() {
   return `
     <div class="topbar">
       <div class="brand">🇰🇭 Khmer</div>
-      <div class="stat streak" title="Day streak">🔥 ${state.streak}</div>
+      <div class="stat streak ${state.streak > 0 ? 'lit' : ''}" title="Day streak"><span class="flame">🔥</span> ${state.streak}</div>
       <div class="stat xp" title="XP today">⚡ ${state.todayXp}/${state.settings.dailyGoal}</div>
       <button class="avatar-chip" id="open-settings" title="Settings">⚙️</button>
     </div>`;
@@ -179,27 +185,53 @@ function launchLesson(skillId) {
 
 // ---------------- Placement test ----------------
 
-function buildPlacementQuestions() {
-  return flatSkills.map((skill) => {
-    const item = skill.items[Math.floor(Math.random() * skill.items.length)];
+// The first skill the learner hasn't completed yet — skills unlock strictly in
+// course order, so this is exactly where the course path currently sits.
+// Retaking the test starts here instead of from the very beginning, so it's
+// useful again after the first run (e.g. a friend who placed in, kept going
+// with lessons for a while, and now wants to skip ahead further).
+function firstIncompleteIndex() {
+  for (let i = 0; i < flatSkills.length; i++) {
+    if (!((state.progress[flatSkills[i].id]?.completions || 0) > 0)) return i;
+  }
+  return flatSkills.length;
+}
+
+// Two questions per skill, drawn from different items — but the second is
+// only asked if the first is missed. One unlucky guess no longer wrongly
+// stops the whole test; a skill is only marked failed (ending the test) if
+// both tries on it are missed.
+function buildPlacementQuestions(skills) {
+  const answerText = (skill) => (o) => (skill.kind === 'letters' ? o.r : o.e);
+  const makeTry = (skill, item) => {
     const pool = skill.items.filter((x) => x !== item);
-    const opts = shuffle([item, ...shuffle(pool).slice(0, 3)]);
-    const answerText = (o) => (skill.kind === 'letters' ? o.r : o.e);
-    return { skill, item, opts, answerText };
+    return { item, opts: shuffle([item, ...shuffle(pool).slice(0, 3)]) };
+  };
+  return skills.map((skill) => {
+    const [first, second] = shuffle(skill.items).slice(0, 2);
+    return { skill, answerText: answerText(skill), tries: [makeTry(skill, first), makeTry(skill, second || first)] };
   });
 }
 
 function startPlacementTest() {
-  const questions = buildPlacementQuestions();
-  let i = 0;
+  const startIndex = firstIncompleteIndex();
+  const remaining = flatSkills.slice(startIndex);
+  if (!remaining.length) {
+    alert("You've already completed the whole course — no placement test needed!");
+    return;
+  }
+  const questions = buildPlacementQuestions(remaining);
+  let si = 0; // index into `questions` (one entry per skill)
+  let attempt = 0; // 0 = first try, 1 = second chance on the same skill
   const passed = [];
   let ended = false; // guards against finishTest() running twice (quit + pending timer racing)
   let pendingTimer = null;
 
   function render() {
-    if (i >= questions.length) return finishTest();
-    const q = questions[i];
-    const pct = Math.round((i / questions.length) * 100);
+    if (si >= questions.length) return finishTest();
+    const q = questions[si];
+    const { item, opts } = q.tries[attempt];
+    const pct = Math.round((si / questions.length) * 100);
     $app().innerHTML = `
       <div class="lesson-top">
         <button class="lesson-quit" id="quit" title="Stop test">✕</button>
@@ -207,12 +239,13 @@ function startPlacementTest() {
       </div>
       <div class="exercise">
         <h3>Placement test · ${esc(q.skill.title)}</h3>
-        <div class="prompt-big khmer">${esc(q.item.k)}</div>
+        ${attempt === 1 ? '<div class="intro-note">🎲 One more try on this skill</div>' : ''}
+        <div class="prompt-big khmer">${esc(item.k)}</div>
         <div class="choices single-col">
-          ${q.opts
+          ${opts
             .map(
               (o, oi) =>
-                `<button class="choice" data-i="${oi}" data-ok="${o === q.item}">${esc(q.answerText(o))}</button>`
+                `<button class="choice" data-i="${oi}" data-ok="${o === item}">${esc(q.answerText(o))}</button>`
             )
             .join('')}
         </div>
@@ -239,7 +272,11 @@ function startPlacementTest() {
             pendingTimer = null;
             if (ok) {
               passed.push(q.skill.id);
-              i++;
+              si++;
+              attempt = 0;
+              render();
+            } else if (attempt === 0) {
+              attempt = 1;
               render();
             } else {
               finishTest();
@@ -263,6 +300,7 @@ function startPlacementTest() {
       // still show the result screen so they can get back to the path.
       console.error(e);
     }
+    if (passed.length) confettiBurst();
     $app().innerHTML = `
       <div class="lesson-end">
         <div class="big-emoji">🎯</div>
@@ -345,6 +383,7 @@ function startSeriesTrainer() {
         if (ok) correct++;
         document.querySelectorAll('.choice').forEach((x) => (x.disabled = true));
         c.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) setTimeout(() => speakKhmer(item.k, 0.7), 350);
         setTimeout(() => {
           i++;
           render();
@@ -354,6 +393,7 @@ function startSeriesTrainer() {
   }
 
   function finish() {
+    if (correct === rounds.length) confettiBurst();
     $app().innerHTML = `
       <div class="lesson-end">
         <div class="big-emoji">🎵</div>
@@ -383,7 +423,7 @@ function startMinimalPairs() {
       <div class="exercise">
         <h3>👂 Which one did you hear?</h3>
         <div class="listen-row">
-          <button class="audio-big" id="replay">🔊</button>
+          <button class="audio-big" id="replay" data-speak="${esc(played)}">🔊</button>
         </div>
         <div class="choices">
           <button class="choice" data-ok="${played === a}"><span class="kh khmer">${esc(a)}</span></button>
@@ -399,6 +439,7 @@ function startMinimalPairs() {
         if (ok) correct++;
         document.querySelectorAll('.choice').forEach((x) => (x.disabled = true));
         c.classList.add(ok ? 'correct' : 'wrong');
+        if (!ok) setTimeout(() => speakKhmer(played, 0.7), 350);
         setTimeout(() => {
           i++;
           render();
@@ -408,6 +449,7 @@ function startMinimalPairs() {
   }
 
   function finish() {
+    if (correct === rounds.length) confettiBurst();
     $app().innerHTML = `
       <div class="lesson-end">
         <div class="big-emoji">👂</div>
@@ -536,10 +578,12 @@ function renderSettings() {
         <h3>Your stats</h3>
         <p>⭐ ${state.totalXp} total XP · 🔥 ${state.streak} day streak · 📚 ${state.lessonsDone} lessons done</p>
       </div>
+      <button class="btn blue wide" id="retake-placement" style="margin-bottom:12px">🎯 Retake placement test</button>
       <button class="btn ghost wide" id="open-guide" style="margin-bottom:12px">📖 How to read the sounds</button>
       <button class="btn red wide" id="reset-all">Reset all progress</button>
     </div>`;
   document.getElementById('quit').onclick = () => renderMain();
+  document.getElementById('retake-placement').onclick = () => startPlacementTest();
   document.getElementById('open-guide').onclick = () => renderSoundGuide();
   document.querySelectorAll('[data-sfx]').forEach((b) => {
     b.onclick = async () => {
