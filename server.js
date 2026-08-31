@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { query, migrate } = require('./db');
+const { query, migrate, getOrCreateUser, listUsers, userExists } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -20,9 +20,10 @@ function localDay(d) {
   return `${y}-${m}-${day}`;
 }
 
-async function computeStreak() {
+async function computeStreak(userId) {
   const { rows } = await query(
-    'SELECT day FROM activity WHERE xp > 0 ORDER BY day DESC LIMIT 400'
+    'SELECT day FROM activity WHERE user_id = $1 AND xp > 0 ORDER BY day DESC LIMIT 400',
+    [userId]
   );
   const days = new Set(rows.map((r) => r.day));
   let streak = 0;
@@ -57,20 +58,86 @@ function asyncRoute(handler) {
     });
 }
 
-async function fullState() {
-  const settings = (await query('SELECT * FROM settings WHERE id = 1')).rows[0];
+// ---------- Session cookies (no login, just a per-browser profile pointer) ----------
+// No new dependency for this — cookies here are a single opaque user id, not
+// worth pulling in cookie-parser for.
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  const out = {};
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    out[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return out;
+}
+
+function setUserCookie(req, res, userId) {
+  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const maxAgeSeconds = 400 * 24 * 60 * 60; // 400 days — the practical browser cap
+  res.setHeader(
+    'Set-Cookie',
+    `uid=${encodeURIComponent(userId)}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax${
+      secure ? '; Secure' : ''
+    }`
+  );
+}
+
+function clearUserCookie(req, res) {
+  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  res.setHeader(
+    'Set-Cookie',
+    `uid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`
+  );
+}
+
+// Attaches req.userId from the uid cookie, or 401s with a code the frontend
+// recognizes as "show the profile picker" rather than a generic error.
+function requireUser(req, res, next) {
+  const raw = parseCookies(req).uid;
+  const userId = raw ? parseInt(raw, 10) : NaN;
+  if (!userId) return res.status(401).json({ error: 'no-session', code: 'no-session' });
+  userExists(userId)
+    .then((exists) => {
+      if (!exists) {
+        clearUserCookie(req, res);
+        return res.status(401).json({ error: 'no-session', code: 'no-session' });
+      }
+      req.userId = userId;
+      next();
+    })
+    .catch((e) => {
+      console.error(e);
+      res.status(500).json({ error: e.message });
+    });
+}
+
+async function fullState(userId) {
+  const userRow = (await query('SELECT name FROM users WHERE id = $1', [userId])).rows[0];
+  const settings = (await query('SELECT * FROM settings WHERE user_id = $1', [userId])).rows[0];
   const week = weekDays();
   const weekRows = (
-    await query('SELECT day, xp FROM activity WHERE day = ANY($1::text[])', [week])
+    await query('SELECT day, xp FROM activity WHERE user_id = $1 AND day = ANY($2::text[])', [
+      userId,
+      week,
+    ])
   ).rows;
   const byDay = Object.fromEntries(weekRows.map((r) => [r.day, r.xp]));
   const weekXp = week.map((day) => ({ day, xp: byDay[day] || 0 }));
   const todayRow = (
-    await query('SELECT xp FROM activity WHERE day = $1', [localDay(new Date())])
+    await query('SELECT xp FROM activity WHERE user_id = $1 AND day = $2', [
+      userId,
+      localDay(new Date()),
+    ])
   ).rows[0];
-  const totalXp = (await query('SELECT COALESCE(SUM(xp),0) AS t FROM activity')).rows[0].t;
+  const totalXp = (
+    await query('SELECT COALESCE(SUM(xp),0) AS t FROM activity WHERE user_id = $1', [userId])
+  ).rows[0].t;
   const progressRows = (
-    await query('SELECT lesson_id, completions, best_score FROM lesson_progress')
+    await query('SELECT lesson_id, completions, best_score FROM lesson_progress WHERE user_id = $1', [
+      userId,
+    ])
   ).rows;
   const progress = {};
   for (const r of progressRows) {
@@ -80,11 +147,12 @@ async function fullState() {
     (r) => r.completions > 0 && r.lesson_id !== 'review' && r.lesson_id !== 'practice'
   ).length;
   return {
+    userName: userRow ? userRow.name : null,
     settings: {
       dailyGoal: settings.daily_goal,
       soundEffects: settings.sound_effects,
     },
-    streak: await computeStreak(),
+    streak: await computeStreak(userId),
     todayXp: todayRow ? Number(todayRow.xp) : 0,
     weekXp,
     weekTotal: weekXp.reduce((s, d) => s + d.xp, 0),
@@ -94,63 +162,89 @@ async function fullState() {
   };
 }
 
+// ---------- Profiles (no password — pick or create a name) ----------
+app.get(
+  '/api/users',
+  asyncRoute(async (req, res) => {
+    res.json(await listUsers());
+  })
+);
+
+app.post(
+  '/api/session',
+  asyncRoute(async (req, res) => {
+    const user = await getOrCreateUser(req.body.name);
+    setUserCookie(req, res, user.id);
+    res.json({ user, state: await fullState(user.id) });
+  })
+);
+
+app.post('/api/logout', (req, res) => {
+  clearUserCookie(req, res);
+  res.json({ ok: true });
+});
+
 // ---------- App state ----------
 app.get(
   '/api/state',
+  requireUser,
   asyncRoute(async (req, res) => {
-    res.json(await fullState());
+    res.json(await fullState(req.userId));
   })
 );
 
 app.put(
   '/api/settings',
+  requireUser,
   asyncRoute(async (req, res) => {
-    const s = (await query('SELECT * FROM settings WHERE id = 1')).rows[0];
+    const s = (await query('SELECT * FROM settings WHERE user_id = $1', [req.userId])).rows[0];
     const { dailyGoal, soundEffects } = req.body;
-    await query(
-      'UPDATE settings SET daily_goal = $1, sound_effects = $2 WHERE id = 1',
-      [
-        dailyGoal !== undefined ? dailyGoal : s.daily_goal,
-        soundEffects !== undefined ? soundEffects : s.sound_effects,
-      ]
-    );
-    res.json(await fullState());
+    await query('UPDATE settings SET daily_goal = $1, sound_effects = $2 WHERE user_id = $3', [
+      dailyGoal !== undefined ? dailyGoal : s.daily_goal,
+      soundEffects !== undefined ? soundEffects : s.sound_effects,
+      req.userId,
+    ]);
+    res.json(await fullState(req.userId));
   })
 );
 
 app.post(
   '/api/reset',
+  requireUser,
   asyncRoute(async (req, res) => {
-    await query('DELETE FROM lesson_progress');
-    await query('DELETE FROM activity');
-    await query('UPDATE settings SET daily_goal = 20, sound_effects = true WHERE id = 1');
-    res.json(await fullState());
+    await query('DELETE FROM lesson_progress WHERE user_id = $1', [req.userId]);
+    await query('DELETE FROM activity WHERE user_id = $1', [req.userId]);
+    await query('UPDATE settings SET daily_goal = 20, sound_effects = true WHERE user_id = $1', [
+      req.userId,
+    ]);
+    res.json(await fullState(req.userId));
   })
 );
 
 // ---------- Lesson progress ----------
 app.post(
   '/api/progress',
+  requireUser,
   asyncRoute(async (req, res) => {
     const { lessonId, score, xp } = req.body;
     if (!lessonId) return res.status(400).json({ error: 'lessonId required' });
     const gainedXp = Math.max(0, Math.min(100, Number(xp) || 0));
     const now = new Date().toISOString();
     await query(
-      `INSERT INTO lesson_progress (lesson_id, completions, best_score, last_completed)
-       VALUES ($1, 1, $2, $3)
-       ON CONFLICT (lesson_id) DO UPDATE SET
+      `INSERT INTO lesson_progress (user_id, lesson_id, completions, best_score, last_completed)
+       VALUES ($1, $2, 1, $3, $4)
+       ON CONFLICT (user_id, lesson_id) DO UPDATE SET
          completions = lesson_progress.completions + 1,
          best_score = GREATEST(lesson_progress.best_score, excluded.best_score),
          last_completed = excluded.last_completed`,
-      [lessonId, Math.max(0, Math.min(100, Number(score) || 0)), now]
+      [req.userId, lessonId, Math.max(0, Math.min(100, Number(score) || 0)), now]
     );
     await query(
-      `INSERT INTO activity (day, xp) VALUES ($1, $2)
-       ON CONFLICT (day) DO UPDATE SET xp = activity.xp + excluded.xp`,
-      [localDay(new Date()), gainedXp]
+      `INSERT INTO activity (user_id, day, xp) VALUES ($1, $2, $3)
+       ON CONFLICT (user_id, day) DO UPDATE SET xp = activity.xp + excluded.xp`,
+      [req.userId, localDay(new Date()), gainedXp]
     );
-    res.json({ ok: true, state: await fullState() });
+    res.json({ ok: true, state: await fullState(req.userId) });
   })
 );
 
@@ -159,6 +253,7 @@ app.post(
 // and logs one activity entry for the whole test, rather than per-lesson XP.
 app.post(
   '/api/placement',
+  requireUser,
   asyncRoute(async (req, res) => {
     const { passedLessonIds, xp } = req.body;
     if (!Array.isArray(passedLessonIds)) {
@@ -167,24 +262,24 @@ app.post(
     const now = new Date().toISOString();
     for (const lessonId of passedLessonIds) {
       await query(
-        `INSERT INTO lesson_progress (lesson_id, completions, best_score, last_completed)
-         VALUES ($1, 1, 85, $2)
-         ON CONFLICT (lesson_id) DO UPDATE SET
+        `INSERT INTO lesson_progress (user_id, lesson_id, completions, best_score, last_completed)
+         VALUES ($1, $2, 1, 85, $3)
+         ON CONFLICT (user_id, lesson_id) DO UPDATE SET
            completions = GREATEST(lesson_progress.completions, 1),
            best_score = GREATEST(lesson_progress.best_score, 85),
            last_completed = excluded.last_completed`,
-        [lessonId, now]
+        [req.userId, lessonId, now]
       );
     }
     const gainedXp = Math.max(0, Math.min(200, Number(xp) || 0));
     if (gainedXp > 0) {
       await query(
-        `INSERT INTO activity (day, xp) VALUES ($1, $2)
-         ON CONFLICT (day) DO UPDATE SET xp = activity.xp + excluded.xp`,
-        [localDay(new Date()), gainedXp]
+        `INSERT INTO activity (user_id, day, xp) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, day) DO UPDATE SET xp = activity.xp + excluded.xp`,
+        [req.userId, localDay(new Date()), gainedXp]
       );
     }
-    res.json({ ok: true, state: await fullState() });
+    res.json({ ok: true, state: await fullState(req.userId) });
   })
 );
 

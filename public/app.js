@@ -1,5 +1,5 @@
 import { SECTIONS, allSkills, findSkill } from './data.js';
-import { api } from './api.js';
+import { api, isNoSession } from './api.js';
 import { startLesson, speakKhmer, confettiBurst } from './lesson.js';
 
 // We scroll to the learner's current position ourselves on every render — the
@@ -44,6 +44,7 @@ const MINIMAL_PAIRS = [
 ];
 
 const state = {
+  userName: null,
   settings: { dailyGoal: 20, soundEffects: true },
   streak: 0,
   todayXp: 0,
@@ -58,6 +59,7 @@ const state = {
 const flatSkills = allSkills(); // fixed course order: script, then unit1..unit10
 
 function applyState(s) {
+  state.userName = s.userName;
   state.settings = s.settings;
   state.streak = s.streak;
   state.todayXp = s.todayXp;
@@ -70,6 +72,25 @@ function applyState(s) {
 
 async function refreshState() {
   applyState(await api.getState());
+}
+
+// Saves progress with a real retry loop instead of silently losing it, or
+// (the old placement-test bug) showing a success screen even when the save
+// to the server had actually failed. Returns whether the save landed.
+async function saveProgressOrRetry(saveCall) {
+  for (;;) {
+    try {
+      await saveCall();
+      await refreshState();
+      return true;
+    } catch (e) {
+      console.error(e);
+      const retry = confirm(
+        "Couldn't save your progress — check your connection.\n\nRetry? (Cancel leaves this session unsaved.)"
+      );
+      if (!retry) return false;
+    }
+  }
 }
 
 // ---------------- Chrome (topbar / tabs) ----------------
@@ -176,8 +197,7 @@ function launchLesson(skillId) {
     soundEffects: state.settings.soundEffects,
     onExit: () => renderMain(),
     onFinish: async ({ score, xp }) => {
-      await api.saveProgress(skillId, score, xp);
-      await refreshState();
+      await saveProgressOrRetry(() => api.saveProgress(skillId, score, xp));
       renderMain();
     },
   });
@@ -291,22 +311,34 @@ function startPlacementTest() {
   async function finishTest() {
     if (ended) return;
     ended = true;
-    try {
+    // Whether the placement result is actually saved server-side. Used to
+    // decide which end screen to show — a prior bug here showed the success
+    // screen unconditionally, even when the save had silently failed, so
+    // people would ace the test and still find themselves back at lesson one.
+    let saved = true;
+    if (passed.length) {
       const xp = Math.min(200, passed.length * 5);
-      if (passed.length) await api.placement(passed, xp);
-      await refreshState();
-    } catch (e) {
-      // Don't leave the user stuck on a disabled exercise screen if the save failed —
-      // still show the result screen so they can get back to the path.
-      console.error(e);
+      saved = await saveProgressOrRetry(() => api.placement(passed, xp));
+    } else {
+      await refreshState().catch((e) => console.error(e));
     }
-    if (passed.length) confettiBurst();
-    $app().innerHTML = `
+    if (saved && passed.length) confettiBurst();
+    $app().innerHTML = saved
+      ? `
       <div class="lesson-end">
         <div class="big-emoji">🎯</div>
         <h2>Placed you through ${passed.length} skill${passed.length === 1 ? '' : 's'}!</h2>
         <p class="muted" style="text-align:center;margin-bottom:24px">
           Everything up to there is marked complete — pick up right where you left off.</p>
+        <button class="btn wide" id="end-continue">Go to Learn</button>
+      </div>`
+      : `
+      <div class="lesson-end">
+        <div class="big-emoji">⚠️</div>
+        <h2>Couldn't save your placement</h2>
+        <p class="muted" style="text-align:center;margin-bottom:24px">
+          Your test results weren't saved to the server, so nothing was marked complete.
+          Check your connection and retake the test.</p>
         <button class="btn wide" id="end-continue">Go to Learn</button>
       </div>`;
     document.getElementById('end-continue').onclick = () => {
@@ -542,8 +574,7 @@ function startSmartPractice() {
     soundEffects: state.settings.soundEffects,
     onExit: () => renderMain(),
     onFinish: async ({ score, xp }) => {
-      await api.saveProgress('practice', score, xp);
-      await refreshState();
+      await saveProgressOrRetry(() => api.saveProgress('practice', score, xp));
       renderMain();
     },
   });
@@ -576,15 +607,24 @@ function renderSettings() {
       </div>
       <div class="duo-card">
         <h3>Your stats</h3>
-        <p>⭐ ${state.totalXp} total XP · 🔥 ${state.streak} day streak · 📚 ${state.lessonsDone} lessons done</p>
+        <p>${state.userName ? `👤 ${esc(state.userName)} · ` : ''}⭐ ${state.totalXp} total XP · 🔥 ${state.streak} day streak · 📚 ${state.lessonsDone} lessons done</p>
       </div>
       <button class="btn blue wide" id="retake-placement" style="margin-bottom:12px">🎯 Retake placement test</button>
       <button class="btn ghost wide" id="open-guide" style="margin-bottom:12px">📖 How to read the sounds</button>
+      <button class="btn ghost wide" id="switch-profile" style="margin-bottom:12px">🔀 Switch profile</button>
       <button class="btn red wide" id="reset-all">Reset all progress</button>
     </div>`;
   document.getElementById('quit').onclick = () => renderMain();
   document.getElementById('retake-placement').onclick = () => startPlacementTest();
   document.getElementById('open-guide').onclick = () => renderSoundGuide();
+  document.getElementById('switch-profile').onclick = async () => {
+    try {
+      await api.logout();
+    } catch (e) {
+      console.error(e);
+    }
+    renderProfilePicker();
+  };
   document.querySelectorAll('[data-sfx]').forEach((b) => {
     b.onclick = async () => {
       await api.updateSettings({ soundEffects: b.dataset.sfx === 'true' });
@@ -605,6 +645,58 @@ function renderSettings() {
     await refreshState();
     renderWelcome();
   };
+}
+
+// ---------------- Profile picker (no password — pick or type a name) ----------------
+
+async function renderProfilePicker() {
+  let users = [];
+  try {
+    users = await api.getUsers();
+  } catch (e) {
+    console.error(e);
+  }
+  $app().innerHTML = `
+    <div class="setup">
+      <h1>🇰🇭 Khmer Practice</h1>
+      <p>Who's learning?</p>
+      ${
+        users.length
+          ? `<div class="choices single-col" id="profile-list" style="margin-bottom:16px">
+               ${users
+                 .map((u) => `<button class="choice" data-user="${esc(u.name)}">${esc(u.name)}</button>`)
+                 .join('')}
+             </div>`
+          : ''
+      }
+      <div style="display:flex;gap:10px;max-width:360px;margin:0 auto">
+        <input id="profile-name" type="text" placeholder="Type your name" maxlength="40"
+          style="flex:1;font:inherit;padding:10px;border:2px solid var(--line);border-radius:12px" />
+        <button class="btn blue" id="profile-go">Go</button>
+      </div>
+      <p class="muted" style="text-align:center;margin-top:12px">No password — typing an existing name signs back into that profile.</p>
+    </div>`;
+
+  async function chooseName(name) {
+    const clean = name.trim();
+    if (!clean) return;
+    try {
+      await api.startSession(clean);
+      await init();
+    } catch (e) {
+      console.error(e);
+      alert("Couldn't start your session — check your connection and try again.");
+    }
+  }
+
+  document.querySelectorAll('[data-user]').forEach((b) => {
+    b.onclick = () => chooseName(b.dataset.user);
+  });
+  document.getElementById('profile-go').onclick = () =>
+    chooseName(document.getElementById('profile-name').value);
+  document.getElementById('profile-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') chooseName(document.getElementById('profile-name').value);
+  });
 }
 
 // ---------------- Welcome (first run only) ----------------
@@ -639,7 +731,14 @@ function renderMain() {
 }
 
 async function init() {
-  await refreshState();
+  try {
+    await refreshState();
+  } catch (e) {
+    if (isNoSession(e)) return renderProfilePicker();
+    console.error(e);
+    alert("Couldn't reach the server — check your connection and reload.");
+    return;
+  }
   if (state.lessonsDone === 0 && Object.keys(state.progress).length === 0) {
     renderWelcome();
   } else {
